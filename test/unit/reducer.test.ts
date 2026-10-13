@@ -354,6 +354,30 @@ describe("task reducer", () => {
 		).toThrow("vague or broad wording");
 	});
 
+	it.each(["Fix.", "Update.", "Complete."])(
+		"keeps rejecting broad action words followed by sentence punctuation: %s",
+		(text) => {
+			expect(() =>
+				apply([
+					{
+						...created(),
+						planSteps: [
+							{
+								text,
+								expectedOutput: `Result: ${text}`,
+								criterionIds: ["T1-AC1"],
+								evidenceRequired: true,
+								allowedActions: [text],
+								decompositionStatus: "atomic",
+								granularityCheck: atomicCheck,
+							},
+						],
+					},
+				]),
+			).toThrow("vague or broad wording");
+		},
+	);
+
 	it("does not auto-link criterion evidence to multiple matching child steps", () => {
 		const sharedCriterionDecompose: TaskEvent = {
 			...decompose(),

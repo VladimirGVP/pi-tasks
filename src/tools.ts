@@ -908,7 +908,7 @@ function taskEvidenceParametersSchema() {
 		level: Type.Enum(VERIFICATION_LEVELS),
 		summary: Type.String({
 			maxLength: MAX_EVIDENCE_SUMMARY_LENGTH,
-			description: `Concise evidence summary, at most ${MAX_EVIDENCE_SUMMARY_LENGTH} characters; put long output in quality.artifactRefs`,
+			description: `Concise evidence summary, at most ${MAX_EVIDENCE_SUMMARY_LENGTH} characters; store long output in an artifact and reference it via quality.artifactRefs`,
 		}),
 		passed: Type.Enum(["true", "false", "unknown"] as const),
 		references: Type.Array(
@@ -947,7 +947,7 @@ function evidenceQualitySchema() {
 		verifier: Type.Enum(["agent", "tool", "user", "external"] as const),
 		command: Type.String({
 			maxLength: MAX_EVIDENCE_REFERENCE_LENGTH,
-			description: `Exact command or verification action, at most ${MAX_EVIDENCE_REFERENCE_LENGTH} characters; put a longer command in artifactRefs`,
+			description: `Exact command or verification action, at most ${MAX_EVIDENCE_REFERENCE_LENGTH} characters; store a longer command in an artifact and reference it via artifactRefs`,
 		}),
 		artifactRefs: Type.Array(
 			Type.String({
@@ -957,7 +957,7 @@ function evidenceQualitySchema() {
 		),
 		observedOutput: Type.String({
 			maxLength: MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH,
-			description: `Concise observed output, at most ${MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH} characters; put long logs in artifactRefs`,
+			description: `Concise observed output, at most ${MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH} characters; store long logs in an artifact and reference it via artifactRefs`,
 		}),
 	});
 }
@@ -1007,7 +1007,8 @@ function appendAndReport(
 							]
 						: []),
 					"",
-					...(recovery.retry_with === recovery.resume.recommendedTool
+					...(!recovery.correct_rejected_call_first &&
+					recovery.retry_with === recovery.resume.recommendedTool
 						? ["Recovery guidance:", resume]
 						: [
 								"Recovery guidance: correct the rejected call above, then call task_resume for the next task action.",
@@ -1037,6 +1038,7 @@ function buildRejectionRecovery(
 			resume.nextAllowedActions[0] ??
 			"task_resume",
 		minimum_params: scopeRecovery?.minimum_params ?? resume.minimumParams ?? {},
+		correct_rejected_call_first: scopeRecovery !== undefined,
 		do_not_retry_same_call: true,
 		...(retryExample ? { retry_example: retryExample } : {}),
 		resume,
@@ -1130,14 +1132,12 @@ function buildEvidenceRetryExample(
 				MAX_EVIDENCE_REFERENCE_LENGTH,
 				"<exact verification command or action; full command in artifactRefs>",
 			)
-		: references[0] === referencePlaceholder
-			? "<exact verification command or action>"
-			: references[0];
+		: "<exact verification command or action>";
 	const quality: Record<string, unknown> = {
 		source: boundedRetryText(
 			event.evidence.quality?.source,
 			MAX_EVIDENCE_REFERENCE_LENGTH,
-			event.evidence.type,
+			"<concise evidence source>",
 		),
 		reproducible: true,
 		verifier: event.evidence.quality?.verifier ?? "tool",

@@ -21,18 +21,18 @@ import {
 const TERMINAL_STATUSES: TaskStatus[] = ["done", "cancelled"];
 const MIN_PLAN_QUALITY_SCORE = 80;
 const COMPOUND_STEP_PATTERNS = [
-	/(?<![/\\._-])\b(and|then|also|plus|after that)\b(?![/\\._-])/i,
+	/(?<![/\\._-])\b(and|then|also|plus|after that)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu,
 	/[;&]/,
-	/(?<![/\\._-])(?:並且|然後|接著|以及|同時|再來)(?![/\\._-])/,
+	/(?<![/\\._-])(?:並且|然後|接著|以及|同時|再來)(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
 ];
 const VAGUE_PLAN_PATTERNS = [
-	/(?<![/\\._-])\b(do|handle|fix|improve|update|implement|complete|work on|deal with)\b(?![/\\._-])/i,
-	/(?<![/\\._-])完成(全部|所有|整個)?(?![/\\._-])/,
-	/(?<![/\\._-])處理(一下|全部|所有)?(?![/\\._-])/,
-	/(?<![/\\._-])修好(?![/\\._-])/,
-	/(?<![/\\._-])優化(?![/\\._-])/,
-	/(?<![/\\._-])弄好(?![/\\._-])/,
-	/(?<![/\\._-])整理(?![/\\._-])/,
+	/(?<![/\\._-])\b(do|handle|fix|improve|update|implement|complete|work on|deal with)\b(?![/\\_-]|\.[\p{L}\p{N}_-])/iu,
+	/(?<![/\\._-])完成(全部|所有|整個)?(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
+	/(?<![/\\._-])處理(一下|全部|所有)?(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
+	/(?<![/\\._-])修好(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
+	/(?<![/\\._-])優化(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
+	/(?<![/\\._-])弄好(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
+	/(?<![/\\._-])整理(?![/\\_-]|\.[\p{L}\p{N}_-])/u,
 ];
 const VAGUE_EVIDENCE_PATTERNS = [
 	/\b(done|looks good|seems ok|probably|should work)\b/i,

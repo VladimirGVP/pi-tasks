@@ -248,6 +248,7 @@ describe("registered task tools", () => {
 					reproducible: true,
 					verifier: "tool",
 					artifactRefs: ["npm test"],
+					command: "npm test",
 				},
 			},
 			ctx,
@@ -408,7 +409,7 @@ describe("registered task tools", () => {
 					"<concise evidence summary; put long output in quality.artifactRefs>",
 				references: ["<short-artifact-or-command-reference>"],
 				quality: {
-					source: "test",
+					source: "<concise evidence source>",
 					command:
 						"<exact verification command or action; full command in artifactRefs>",
 					artifactRefs: ["<short-artifact-reference>"],
@@ -465,6 +466,7 @@ describe("registered task tools", () => {
 		expect(missingActivity.isError).toBe(true);
 		expect(missingActivity.details).toMatchObject({
 			retry_with: "task_update",
+			correct_rejected_call_first: true,
 			minimum_params: {
 				task_id: "T1",
 				activity: "<meaningful activity performed>",
@@ -1002,8 +1004,26 @@ describe("registered task tools", () => {
 		expect(checked.content[0]?.text).toContain(
 			"Next allowed action: task_update",
 		);
-
 		const persistedAtLimit = entries.length;
+		const rejectedScope = await execute(
+			update,
+			{ task_id: "T1", scope: "within_step" },
+			ctx,
+		);
+		expect(rejectedScope.isError).toBe(true);
+		expect(rejectedScope.details).toMatchObject({
+			retry_with: "task_update",
+			correct_rejected_call_first: true,
+			minimum_params: {
+				task_id: "T1",
+				activity: "<meaningful activity performed>",
+				scope: "within_step",
+			},
+		});
+		expect(rejectedScope.content[0]?.text).not.toContain(
+			"maximum decomposition depth",
+		);
+		expect(entries).toHaveLength(persistedAtLimit);
 		const rejectedDone = await execute(
 			update,
 			{ task_id: "T1", step_id: stepId, step_status: "done" },
