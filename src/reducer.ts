@@ -57,12 +57,12 @@ export type TaskTransitionErrorCode =
 	| "scope_reason_required";
 
 export class TaskTransitionError extends Error {
-	constructor(
-		message: string,
-		readonly code?: TaskTransitionErrorCode,
-	) {
+	readonly code: TaskTransitionErrorCode | undefined;
+
+	constructor(message: string, code?: TaskTransitionErrorCode) {
 		super(message);
 		this.name = "TaskTransitionError";
+		this.code = code;
 	}
 }
 
