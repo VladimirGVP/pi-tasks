@@ -17,6 +17,9 @@ export type TaskStepGranularityStatus =
 	| "deferred";
 
 export const MAX_DECOMPOSITION_DEPTH = 4;
+export const MAX_EVIDENCE_SUMMARY_LENGTH = 500;
+export const MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH = 1000;
+export const MAX_EVIDENCE_REFERENCE_LENGTH = 300;
 export type VerificationLevel =
 	| "not_verified"
 	| "static_read"

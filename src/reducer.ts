@@ -4,6 +4,9 @@ import {
 	type EvidenceQuality,
 	isAtMaximumDecompositionDepth,
 	MAX_DECOMPOSITION_DEPTH,
+	MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH,
+	MAX_EVIDENCE_REFERENCE_LENGTH,
+	MAX_EVIDENCE_SUMMARY_LENGTH,
 	type PlanQuality,
 	type Task,
 	type TaskEvent,
@@ -17,9 +20,6 @@ import {
 
 const TERMINAL_STATUSES: TaskStatus[] = ["done", "cancelled"];
 const MIN_PLAN_QUALITY_SCORE = 80;
-const MAX_EVIDENCE_SUMMARY_LENGTH = 500;
-const MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH = 1000;
-const MAX_EVIDENCE_REFERENCE_LENGTH = 300;
 const COMPOUND_STEP_PATTERNS = [
 	/\b(and|then|also|plus|after that)\b/i,
 	/[;&]/,

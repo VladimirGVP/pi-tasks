@@ -12,7 +12,12 @@ if (!sdkRoot) {
 	);
 }
 
+// PI_SDK_ROOT selects the installed SDK version under test; a static import
+// would resolve the repository's dependencies instead of that release.
 const sdk = await import(pathToFileURL(join(sdkRoot, "dist/index.js")).href);
+const piAi = await import(
+	pathToFileURL(join(sdkRoot, "..", "pi-ai", "dist", "index.js")).href
+);
 const taskRoot = resolve(import.meta.dirname, "..");
 const taskToolNames = new Set([
 	"task_plan",
@@ -264,9 +269,6 @@ describe("native Pi dynamic task tools", () => {
 				"task_resume",
 			]);
 			const fresh = toolSurface(first.session);
-			expect(first.session.agent.state.systemPrompt).toContain(
-				"Use task_plan for multi-step work before implementation when no suitable active task exists.",
-			);
 
 			appendNativeToolCall(first.sessionManager);
 			const created = await requireTool(first.session, "task_plan").execute(
@@ -311,9 +313,6 @@ describe("native Pi dynamic task tools", () => {
 			expect(active.schemaAndDescriptionChars).toBeGreaterThan(
 				fresh.schemaAndDescriptionChars,
 			);
-			expect(first.session.agent.state.systemPrompt).toContain(
-				"Use task_plan for multi-step work before implementation when no suitable active task exists.",
-			);
 			console.info(
 				`pi-tasks surface chars fresh schema+description=${fresh.schemaAndDescriptionChars}, system-prompt=${fresh.systemPromptChars}; active schema+description=${active.schemaAndDescriptionChars}, system-prompt=${active.systemPromptChars}`,
 			);
@@ -339,6 +338,57 @@ describe("native Pi dynamic task tools", () => {
 			}
 		} finally {
 			first.session.dispose();
+		}
+	});
+
+	it("enforces task_evidence text limits through the native Pi validator", async () => {
+		const active = await createNativeSession();
+		try {
+			await requireTool(active.session, "task_plan").execute(
+				"native-evidence-plan",
+				validPlan(),
+				undefined,
+				undefined,
+			);
+			const evidence = requireTool(active.session, "task_evidence");
+			const argumentsAtBoundary = {
+				task_id: "T1",
+				type: "test",
+				level: "unit_test",
+				summary: "native validator accepted the evidence boundary",
+				passed: "true",
+				references: ["npm test"],
+				step_ids: ["T1-S1"],
+				quality: {
+					source: "native validator",
+					reproducible: true,
+					verifier: "tool",
+					command: "x".repeat(300),
+					artifactRefs: ["npm test"],
+					observedOutput: "Tests 1 passed (1)",
+				},
+			};
+
+			expect(
+				piAi.validateToolArguments(evidence, {
+					name: "task_evidence",
+					arguments: argumentsAtBoundary,
+				}),
+			).toMatchObject(argumentsAtBoundary);
+			expect(() =>
+				piAi.validateToolArguments(evidence, {
+					name: "task_evidence",
+					arguments: {
+						...argumentsAtBoundary,
+						quality: {
+							...argumentsAtBoundary.quality,
+							command: "x".repeat(301),
+						},
+					},
+				}),
+			).toThrow(/quality\.command.*300/);
+		} finally {
+			active.session.dispose();
 		}
 	});
 

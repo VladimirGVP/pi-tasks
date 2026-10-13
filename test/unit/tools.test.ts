@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { TASK_EVENT_CUSTOM_TYPE, type TaskEvent } from "../../src/model.ts";
+import {
+	MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH,
+	MAX_EVIDENCE_REFERENCE_LENGTH,
+	MAX_EVIDENCE_SUMMARY_LENGTH,
+	TASK_EVENT_CUSTOM_TYPE,
+	type TaskEvent,
+} from "../../src/model.ts";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -7,6 +13,15 @@ import type {
 } from "../../src/pi-types.ts";
 import { createTaskRuntimeStore } from "../../src/store.ts";
 import { registerTaskTools } from "../../src/tools.ts";
+
+interface ToolSchema {
+	type?: string;
+	enum?: string[];
+	required?: string[];
+	maxLength?: number;
+	properties?: Record<string, ToolSchema>;
+	items?: ToolSchema;
+}
 
 class FixedIds {
 	private index = 0;
@@ -131,17 +146,7 @@ describe("registered task tools", () => {
 	it("uses an omp-compatible task_evidence schema with required quality fields", () => {
 		const { tools } = createHarness();
 		const evidence = requireTool(tools, "task_evidence");
-		const schema = evidence.parameters as {
-			type?: string;
-			required?: string[];
-			properties?: Record<
-				string,
-				{
-					enum?: string[];
-					required?: string[];
-				}
-			>;
-		};
+		const schema = evidence.parameters as ToolSchema;
 
 		expect(schema.type).toBe("object");
 		expect(schema.required).toEqual(
@@ -172,6 +177,24 @@ describe("registered task tools", () => {
 			]),
 		);
 		expect(schema).not.toHaveProperty("oneOf");
+		expect(schema.properties?.summary?.maxLength).toBe(
+			MAX_EVIDENCE_SUMMARY_LENGTH,
+		);
+		expect(schema.properties?.references?.items?.maxLength).toBe(
+			MAX_EVIDENCE_REFERENCE_LENGTH,
+		);
+		expect(schema.properties?.quality?.properties?.source?.maxLength).toBe(
+			MAX_EVIDENCE_REFERENCE_LENGTH,
+		);
+		expect(schema.properties?.quality?.properties?.command?.maxLength).toBe(
+			MAX_EVIDENCE_REFERENCE_LENGTH,
+		);
+		expect(
+			schema.properties?.quality?.properties?.artifactRefs?.items?.maxLength,
+		).toBe(MAX_EVIDENCE_REFERENCE_LENGTH);
+		expect(
+			schema.properties?.quality?.properties?.observedOutput?.maxLength,
+		).toBe(MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH);
 	});
 
 	it("returns a copyable task_evidence example after quality rejection", async () => {
@@ -231,9 +254,8 @@ describe("registered task tools", () => {
 		);
 
 		expect(rejected.isError).toBe(true);
-		expect(rejected.content[0]?.text).toContain(
-			"Minimal working task_evidence params",
-		);
+		expect(rejected.content[0]?.text).toContain("task_evidence retry template");
+		expect(rejected.content[0]?.text).not.toContain("Minimal working");
 		expect(rejected.content[0]?.text).toContain('"command": "npm test"');
 		expect(rejected.content[0]?.text).toContain(
 			'"observedOutput": "<concise observed output',
@@ -251,6 +273,158 @@ describe("registered task tools", () => {
 				},
 			},
 		});
+	});
+
+	it("keeps required verification commands in test and dogfood retry templates", async () => {
+		for (const type of ["test", "dogfood"] as const) {
+			const { tools, entries, ctx } = createHarness();
+			const plan = requireTool(tools, "task_plan");
+			const evidence = requireTool(tools, "task_evidence");
+			await execute(
+				plan,
+				{
+					title: `${type} recovery`,
+					objective: `Verify ${type} recovery command`,
+					acceptance_criteria: ["Recovery preserves the verification command"],
+					plan_steps: [
+						{
+							text: `Record ${type} evidence`,
+							expectedOutput: `${type} retry template preserves its command`,
+							allowedActions: ["task_evidence"],
+							decompositionStatus: "atomic",
+							granularityCheck: {
+								isAtomic: true,
+								reason:
+									"One rejected evidence call produces one retry template",
+								canBeDoneInOneAgentAction: true,
+								hasSingleObservableOutput: true,
+								hasSingleVerificationMethod: true,
+								hasNoHiddenSubtasks: true,
+							},
+						},
+					],
+				},
+				ctx,
+			);
+
+			const rejected = await execute(
+				evidence,
+				{
+					task_id: "T1",
+					type,
+					level: "not_verified",
+					summary: `${type} run reported 7 passed`,
+					passed: "true",
+					references: ["npm test"],
+					step_ids: ["T1-S1"],
+					quality: {
+						source: "local fixture",
+						reproducible: true,
+						verifier: "tool",
+						command: "npm test",
+						artifactRefs: ["npm test"],
+						observedOutput: "Tests 7 passed (7)",
+					},
+				},
+				ctx,
+			);
+
+			expect(rejected.isError).toBe(true);
+			expect(rejected.details).toMatchObject({
+				retry_example: {
+					type,
+					quality: {
+						command: "npm test",
+					},
+				},
+			});
+			expect(entries).toHaveLength(1);
+		}
+	});
+
+	it("replaces every over-limit retry field without truncating submitted values", async () => {
+		const { tools, entries, ctx } = createHarness();
+		const plan = requireTool(tools, "task_plan");
+		const evidence = requireTool(tools, "task_evidence");
+		await execute(
+			plan,
+			{
+				title: "Bounded recovery",
+				objective: "Verify bounded evidence retry fields",
+				acceptance_criteria: ["Retry fields respect declared limits"],
+				plan_steps: [
+					{
+						text: "Record bounded evidence",
+						expectedOutput: "Rejected evidence returns bounded retry fields",
+						allowedActions: ["task_evidence"],
+						decompositionStatus: "atomic",
+						granularityCheck: {
+							isAtomic: true,
+							reason:
+								"One rejected evidence call produces one bounded template",
+							canBeDoneInOneAgentAction: true,
+							hasSingleObservableOutput: true,
+							hasSingleVerificationMethod: true,
+							hasNoHiddenSubtasks: true,
+						},
+					},
+				],
+			},
+			ctx,
+		);
+		const longSummary = "s".repeat(MAX_EVIDENCE_SUMMARY_LENGTH + 1);
+		const longReference = "r".repeat(MAX_EVIDENCE_REFERENCE_LENGTH + 1);
+		const longSource = "u".repeat(MAX_EVIDENCE_REFERENCE_LENGTH + 1);
+		const longCommand = "c".repeat(MAX_EVIDENCE_REFERENCE_LENGTH + 1);
+		const longArtifact = "a".repeat(MAX_EVIDENCE_REFERENCE_LENGTH + 1);
+		const longOutput = "o".repeat(MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH + 1);
+
+		const rejected = await execute(
+			evidence,
+			{
+				task_id: "T1",
+				type: "test",
+				level: "unit_test",
+				summary: longSummary,
+				passed: "true",
+				references: [longReference],
+				step_ids: ["T1-S1"],
+				quality: {
+					source: longSource,
+					reproducible: true,
+					verifier: "tool",
+					command: longCommand,
+					artifactRefs: [longArtifact],
+					observedOutput: longOutput,
+				},
+			},
+			ctx,
+		);
+
+		expect(rejected.isError).toBe(true);
+		expect(rejected.details).toMatchObject({
+			retry_example: {
+				summary:
+					"<concise evidence summary; put long output in quality.artifactRefs>",
+				references: ["<short-artifact-or-command-reference>"],
+				quality: {
+					source: "test",
+					command:
+						"<exact verification command or action; full command in artifactRefs>",
+					artifactRefs: ["<short-artifact-reference>"],
+					observedOutput:
+						"<concise observed output from the command/test/dogfood run>",
+				},
+			},
+		});
+		const retryText = rejected.content[0]?.text ?? "";
+		expect(retryText).not.toContain(longSummary);
+		expect(retryText).not.toContain(longReference);
+		expect(retryText).not.toContain(longSource);
+		expect(retryText).not.toContain(longCommand);
+		expect(retryText).not.toContain(longArtifact);
+		expect(retryText).not.toContain(longOutput);
+		expect(entries).toHaveLength(1);
 	});
 
 	it("preserves ExtensionAPI method receivers when appending task events", async () => {

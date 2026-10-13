@@ -4,6 +4,7 @@
 
 ### Fixed
 - Replaced impossible `task_decompose` guidance at the maximum decomposition depth with a consistent explicit blocker recovery across resume, next, focus, granularity, state, and rejection outputs.
+- Declared runtime evidence text limits in the tool schema and made command/test/dogfood retry templates preserve required commands while replacing over-limit values with explicit caller-supplied placeholders.
 
 ## [0.2.7] - 2026-09-10
 

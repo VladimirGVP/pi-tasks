@@ -4,6 +4,9 @@ import {
 	type EvidenceQuality,
 	type EvidenceType,
 	isAtMaximumDecompositionDepth,
+	MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH,
+	MAX_EVIDENCE_REFERENCE_LENGTH,
+	MAX_EVIDENCE_SUMMARY_LENGTH,
 	type Task,
 	type TaskDecision,
 	type TaskEvent,
@@ -123,7 +126,7 @@ interface TaskEvidenceParams extends Record<string, unknown> {
 	references: string[];
 	criterion_ids?: string[];
 	step_ids?: string[];
-	quality?: EvidenceQuality;
+	quality: EvidenceQuality;
 	override_reason?: string;
 	supersedes?: string[];
 }
@@ -889,9 +892,17 @@ function taskEvidenceParametersSchema() {
 		task_id: Type.String(),
 		type: Type.Enum(EVIDENCE_TYPES),
 		level: Type.Enum(VERIFICATION_LEVELS),
-		summary: Type.String(),
+		summary: Type.String({
+			maxLength: MAX_EVIDENCE_SUMMARY_LENGTH,
+			description: `Concise evidence summary, at most ${MAX_EVIDENCE_SUMMARY_LENGTH} characters; put long output in quality.artifactRefs`,
+		}),
 		passed: Type.Enum(["true", "false", "unknown"] as const),
-		references: Type.Array(Type.String()),
+		references: Type.Array(
+			Type.String({
+				maxLength: MAX_EVIDENCE_REFERENCE_LENGTH,
+				description: `Artifact path or command reference, at most ${MAX_EVIDENCE_REFERENCE_LENGTH} characters`,
+			}),
+		),
 		criterion_ids: Type.Optional(Type.Array(Type.String())),
 		step_ids: Type.Optional(Type.Array(Type.String())),
 		supersedes: Type.Optional(
@@ -914,17 +925,25 @@ function taskEvidenceParametersSchema() {
 
 function evidenceQualitySchema() {
 	return Type.Object({
-		source: Type.String(),
+		source: Type.String({
+			maxLength: MAX_EVIDENCE_REFERENCE_LENGTH,
+			description: `Evidence source, at most ${MAX_EVIDENCE_REFERENCE_LENGTH} characters`,
+		}),
 		reproducible: Type.Boolean(),
 		verifier: Type.Enum(["agent", "tool", "user", "external"] as const),
 		command: Type.String({
-			description:
-				"Exact command for command evidence; for non-command evidence, name the verification action.",
+			maxLength: MAX_EVIDENCE_REFERENCE_LENGTH,
+			description: `Exact command or verification action, at most ${MAX_EVIDENCE_REFERENCE_LENGTH} characters; put a longer command in artifactRefs`,
 		}),
-		artifactRefs: Type.Array(Type.String()),
+		artifactRefs: Type.Array(
+			Type.String({
+				maxLength: MAX_EVIDENCE_REFERENCE_LENGTH,
+				description: `Artifact reference, at most ${MAX_EVIDENCE_REFERENCE_LENGTH} characters`,
+			}),
+		),
 		observedOutput: Type.String({
-			description:
-				"Concise observed output proving what happened; put long logs in artifactRefs.",
+			maxLength: MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH,
+			description: `Concise observed output, at most ${MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH} characters; put long logs in artifactRefs`,
 		}),
 	});
 }
@@ -966,7 +985,7 @@ function appendAndReport(
 					...(recovery.retry_example
 						? [
 								"",
-								"Minimal working task_evidence params:",
+								"task_evidence retry template (replace angle-bracket placeholders with observed values):",
 								"```json",
 								JSON.stringify(recovery.retry_example, null, 2),
 								"```",
@@ -1013,35 +1032,63 @@ function buildEvidenceRetryExample(
 	) {
 		return undefined;
 	}
+	const referencePlaceholder = "<short-artifact-or-command-reference>";
 	const references =
 		event.evidence.references.length > 0
-			? event.evidence.references
-			: ["<artifact-or-command-reference>"];
+			? event.evidence.references.map((reference) =>
+					boundedRetryText(
+						reference,
+						MAX_EVIDENCE_REFERENCE_LENGTH,
+						referencePlaceholder,
+					),
+				)
+			: [referencePlaceholder];
+	const originalArtifactRefs = event.evidence.quality?.artifactRefs;
 	const artifactRefs =
-		event.evidence.quality?.artifactRefs &&
-		event.evidence.quality.artifactRefs.length > 0
-			? event.evidence.quality.artifactRefs
+		originalArtifactRefs && originalArtifactRefs.length > 0
+			? originalArtifactRefs.map((artifactRef) =>
+					boundedRetryText(
+						artifactRef,
+						MAX_EVIDENCE_REFERENCE_LENGTH,
+						"<short-artifact-reference>",
+					),
+				)
 			: references;
+	const originalCommand = event.evidence.quality?.command?.trim();
+	const command = originalCommand
+		? boundedRetryText(
+				originalCommand,
+				MAX_EVIDENCE_REFERENCE_LENGTH,
+				"<exact verification command or action; full command in artifactRefs>",
+			)
+		: references[0] === referencePlaceholder
+			? "<exact verification command or action>"
+			: references[0];
 	const quality: Record<string, unknown> = {
-		source: event.evidence.quality?.source?.trim() || event.evidence.type,
+		source: boundedRetryText(
+			event.evidence.quality?.source,
+			MAX_EVIDENCE_REFERENCE_LENGTH,
+			event.evidence.type,
+		),
 		reproducible: true,
 		verifier: event.evidence.quality?.verifier ?? "tool",
+		command,
 		artifactRefs,
-		observedOutput:
-			event.evidence.quality?.observedOutput?.trim() ||
+		observedOutput: boundedRetryText(
+			event.evidence.quality?.observedOutput,
+			MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH,
 			"<concise observed output from the command/test/dogfood run>",
+		),
 	};
-	if (event.evidence.type === "command") {
-		quality.command =
-			event.evidence.quality?.command?.trim() ||
-			references[0] ||
-			"<exact command>";
-	}
 	const example: Record<string, unknown> = {
 		task_id: event.taskId,
 		type: event.evidence.type,
 		level: event.evidence.level,
-		summary: event.evidence.summary,
+		summary: boundedRetryText(
+			event.evidence.summary,
+			MAX_EVIDENCE_SUMMARY_LENGTH,
+			"<concise evidence summary; put long output in quality.artifactRefs>",
+		),
 		passed: String(event.evidence.passed),
 		references,
 		quality,
@@ -1051,6 +1098,17 @@ function buildEvidenceRetryExample(
 	if (event.evidence.supersedes) example.supersedes = event.evidence.supersedes;
 	if (event.overrideReason) example.override_reason = event.overrideReason;
 	return example;
+}
+
+function boundedRetryText(
+	value: string | undefined,
+	maxLength: number,
+	placeholder: string,
+): string {
+	const normalized = value?.trim();
+	return normalized && normalized.length <= maxLength
+		? normalized
+		: placeholder;
 }
 
 function selectTask(state: TaskState, taskId?: string): Task | undefined {
