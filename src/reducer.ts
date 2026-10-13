@@ -52,8 +52,15 @@ const CONCRETE_EVIDENCE_SIGNAL_PATTERNS = [
 ];
 const VAGUE_EVIDENCE_SHORT_SUMMARY_LENGTH = 60;
 
+export type TaskTransitionErrorCode =
+	| "scope_activity_required"
+	| "scope_reason_required";
+
 export class TaskTransitionError extends Error {
-	constructor(message: string) {
+	constructor(
+		message: string,
+		readonly code?: TaskTransitionErrorCode,
+	) {
 		super(message);
 		this.name = "TaskTransitionError";
 	}
@@ -868,7 +875,10 @@ function recordScopeSignal(
 ): void {
 	if (!event.activity && !event.scope) return;
 	if (!event.activity?.trim()) {
-		throw new TaskTransitionError("Scope updates require an activity");
+		throw new TaskTransitionError(
+			"Scope updates require an activity",
+			"scope_activity_required",
+		);
 	}
 	const scope = event.scope ?? "within_step";
 	if (
@@ -877,6 +887,7 @@ function recordScopeSignal(
 	) {
 		throw new TaskTransitionError(
 			"Scope change or off-plan activity requires scopeReason",
+			"scope_reason_required",
 		);
 	}
 	if (scope === "scope_change" || scope === "off_plan") {

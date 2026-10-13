@@ -24,6 +24,7 @@ import type {
 	ToolDefinition,
 	ToolResult,
 } from "./pi-types.ts";
+import { TaskTransitionError } from "./reducer.ts";
 import {
 	buildTaskResume,
 	formatTaskFocus,
@@ -647,7 +648,7 @@ export function registerTaskTools(
 			"Only atomic steps can be marked done; use task_decompose below the depth limit, or explicitly block at the limit.",
 			"Evidence-required steps need linked evidence before step_status=done.",
 			"Do not skip ahead; ordered plan steps must be completed or skipped in the displayed order.",
-			"Use activity with scope=within_step, scope_change, or off_plan to document meaningful work and drift.",
+			"Use activity with scope=within_step, scope_change, or off_plan to document meaningful work and drift; setting scope requires activity, and scope_change/off_plan also require scope_reason.",
 			"Use resolve_warnings to explicitly close scope drift warnings before task_complete.",
 			"Moving to blocked requires blocker details; unblocking requires a reason.",
 		],
@@ -660,11 +661,24 @@ export function registerTaskTools(
 			step_id: Type.Optional(Type.String()),
 			step_status: Type.Optional(Type.Enum(STEP_STATUSES)),
 			step_evidence_ids: Type.Optional(Type.Array(Type.String())),
-			activity: Type.Optional(Type.String()),
-			scope: Type.Optional(
-				Type.Enum(["within_step", "scope_change", "off_plan"] as const),
+			activity: Type.Optional(
+				Type.String({
+					description:
+						"Meaningful work performed; required whenever scope is provided.",
+				}),
 			),
-			scope_reason: Type.Optional(Type.String()),
+			scope: Type.Optional(
+				Type.Enum(["within_step", "scope_change", "off_plan"] as const, {
+					description:
+						"Activity classification; requires activity. scope_change and off_plan also require scope_reason.",
+				}),
+			),
+			scope_reason: Type.Optional(
+				Type.String({
+					description:
+						"Required for scope_change and off_plan; not required for within_step.",
+				}),
+			),
 			note: Type.Optional(Type.String()),
 			resolve_warnings: Type.Optional(Type.Array(Type.String())),
 			reason: Type.Optional(
@@ -980,6 +994,7 @@ function appendAndReport(
 					"",
 					"Recovery:",
 					`- retry_with: ${recovery.retry_with}`,
+					`- minimum_params: ${JSON.stringify(recovery.minimum_params)}`,
 					`- do_not_retry_same_call: ${recovery.do_not_retry_same_call}`,
 					`- reason: ${recovery.reason}`,
 					...(recovery.retry_example
@@ -992,8 +1007,11 @@ function appendAndReport(
 							]
 						: []),
 					"",
-					"Recovery guidance:",
-					resume,
+					...(recovery.retry_with === recovery.resume.recommendedTool
+						? ["Recovery guidance:", resume]
+						: [
+								"Recovery guidance: correct the rejected call above, then call task_resume for the next task action.",
+							]),
 				].join("\n"),
 				recovery,
 			),
@@ -1009,16 +1027,67 @@ function buildRejectionRecovery(
 ) {
 	const resume = buildTaskResume(state);
 	const retryExample = buildEvidenceRetryExample(event);
+	const scopeRecovery = buildScopeUpdateRecovery(error, event);
 	return {
 		rejected: true,
 		reason: errorText(error),
 		retry_with:
-			resume.recommendedTool ?? resume.nextAllowedActions[0] ?? "task_resume",
-		minimum_params: resume.minimumParams ?? {},
+			scopeRecovery?.retry_with ??
+			resume.recommendedTool ??
+			resume.nextAllowedActions[0] ??
+			"task_resume",
+		minimum_params: scopeRecovery?.minimum_params ?? resume.minimumParams ?? {},
 		do_not_retry_same_call: true,
 		...(retryExample ? { retry_example: retryExample } : {}),
 		resume,
 	};
+}
+
+function buildScopeUpdateRecovery(
+	error: unknown,
+	event: TaskEvent | undefined,
+):
+	| {
+			retry_with: "task_update";
+			minimum_params: Record<string, unknown>;
+	  }
+	| undefined {
+	if (
+		!(error instanceof TaskTransitionError) ||
+		event?.type !== "task.updated"
+	) {
+		return undefined;
+	}
+	if (error.code === "scope_activity_required") {
+		return {
+			retry_with: "task_update",
+			minimum_params: {
+				task_id: event.taskId,
+				activity: "<meaningful activity performed>",
+				...(event.scope ? { scope: event.scope } : {}),
+				...(event.scope === "scope_change" || event.scope === "off_plan"
+					? {
+							scope_reason:
+								event.scopeReason?.trim() ||
+								"<why this scope change or off-plan activity was necessary>",
+						}
+					: {}),
+			},
+		};
+	}
+	if (error.code === "scope_reason_required") {
+		return {
+			retry_with: "task_update",
+			minimum_params: {
+				task_id: event.taskId,
+				activity: event.activity?.trim() || "<meaningful activity performed>",
+				scope: event.scope,
+				scope_reason:
+					"<why this scope change or off-plan activity was necessary>",
+			},
+		};
+	}
+	return undefined;
 }
 
 function buildEvidenceRetryExample(

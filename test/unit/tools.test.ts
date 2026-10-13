@@ -427,6 +427,149 @@ describe("registered task tools", () => {
 		expect(entries).toHaveLength(1);
 	});
 
+	it("returns targeted task_update recovery for missing scope fields", async () => {
+		const { tools, entries, ctx, store } = createHarness();
+		const plan = requireTool(tools, "task_plan");
+		const update = requireTool(tools, "task_update");
+		await execute(
+			plan,
+			{
+				title: "Scope recovery",
+				objective: "Verify conditional scope update recovery",
+				acceptance_criteria: ["Scope recovery names the missing field"],
+				plan_steps: [
+					{
+						text: "Inspect the current fixture",
+						expectedOutput: "One fixture inspection record",
+						allowedActions: ["Read current fixture"],
+						decompositionStatus: "atomic",
+						granularityCheck: {
+							isAtomic: true,
+							reason: "One fixture read produces one inspection record",
+							canBeDoneInOneAgentAction: true,
+							hasSingleObservableOutput: true,
+							hasSingleVerificationMethod: true,
+							hasNoHiddenSubtasks: true,
+						},
+					},
+				],
+			},
+			ctx,
+		);
+
+		const missingActivity = await execute(
+			update,
+			{ task_id: "T1", scope: "within_step" },
+			ctx,
+		);
+		expect(missingActivity.isError).toBe(true);
+		expect(missingActivity.details).toMatchObject({
+			retry_with: "task_update",
+			minimum_params: {
+				task_id: "T1",
+				activity: "<meaningful activity performed>",
+				scope: "within_step",
+			},
+		});
+		expect(missingActivity.content[0]?.text).toContain(
+			'- minimum_params: {"task_id":"T1","activity":"<meaningful activity performed>","scope":"within_step"}',
+		);
+		expect(missingActivity.content[0]?.text).not.toContain(
+			"Do now: task_evidence",
+		);
+		expect(entries).toHaveLength(1);
+
+		const missingActivityAndReason = await execute(
+			update,
+			{ task_id: "T1", scope: "off_plan" },
+			ctx,
+		);
+		expect(missingActivityAndReason.isError).toBe(true);
+		expect(missingActivityAndReason.details).toMatchObject({
+			retry_with: "task_update",
+			minimum_params: {
+				task_id: "T1",
+				activity: "<meaningful activity performed>",
+				scope: "off_plan",
+				scope_reason:
+					"<why this scope change or off-plan activity was necessary>",
+			},
+		});
+		expect(entries).toHaveLength(1);
+
+		const withinStep = await execute(
+			update,
+			{
+				task_id: "T1",
+				activity: "Inspected the current fixture",
+				scope: "within_step",
+			},
+			ctx,
+		);
+		expect(withinStep.isError).not.toBe(true);
+		expect(entries).toHaveLength(2);
+
+		const activityOnly = await execute(
+			update,
+			{ task_id: "T1", activity: "Recorded the fixture checksum" },
+			ctx,
+		);
+		expect(activityOnly.isError).not.toBe(true);
+		expect(entries).toHaveLength(3);
+
+		const missingReason = await execute(
+			update,
+			{
+				task_id: "T1",
+				activity: "Inspected an extra fixture",
+				scope: "off_plan",
+			},
+			ctx,
+		);
+		expect(missingReason.isError).toBe(true);
+		expect(missingReason.details).toMatchObject({
+			retry_with: "task_update",
+			minimum_params: {
+				task_id: "T1",
+				activity: "Inspected an extra fixture",
+				scope: "off_plan",
+				scope_reason:
+					"<why this scope change or off-plan activity was necessary>",
+			},
+		});
+		expect(missingReason.content[0]?.text).toContain(
+			'"scope_reason":"<why this scope change or off-plan activity was necessary>"',
+		);
+		expect(entries).toHaveLength(3);
+
+		const offPlan = await execute(
+			update,
+			{
+				task_id: "T1",
+				activity: "Inspected an extra fixture",
+				scope: "off_plan",
+				scope_reason: "Needed to compare fixture formats",
+			},
+			ctx,
+		);
+		expect(offPlan.isError).not.toBe(true);
+		expect(entries).toHaveLength(4);
+		expect(store.getState().tasks.T1?.warnings).toContain(
+			"off_plan: Inspected an extra fixture (Needed to compare fixture formats)",
+		);
+
+		const unrelatedRejection = await execute(
+			update,
+			{ task_id: "T1", step_id: "T1-S1", step_status: "done" },
+			ctx,
+		);
+		expect(unrelatedRejection.isError).toBe(true);
+		expect(unrelatedRejection.details).toMatchObject({
+			retry_with: "task_evidence",
+		});
+		expect(entries).toHaveLength(4);
+	});
+
 	it("preserves ExtensionAPI method receivers when appending task events", async () => {
 		const { tools, ctx, store } = createHarness();
 		const plan = requireTool(tools, "task_plan");

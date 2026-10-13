@@ -61,6 +61,7 @@ function isToolActive(
 
 type NativeToolResult = {
 	content: Array<{ type: string; text: string }>;
+	details?: unknown;
 	isError?: boolean;
 };
 
@@ -387,6 +388,75 @@ describe("native Pi dynamic task tools", () => {
 					},
 				}),
 			).toThrow(/quality\.command.*300/);
+		} finally {
+			active.session.dispose();
+		}
+	});
+
+	it("persists only corrected native scope updates after targeted recovery", async () => {
+		const active = await createNativeSession();
+		try {
+			appendNativeToolCall(active.sessionManager);
+			await requireTool(active.session, "task_plan").execute(
+				"native-scope-plan",
+				validPlan(),
+				undefined,
+				undefined,
+			);
+			const update = requireTool(active.session, "task_update");
+			const persistedBefore = active.sessionManager
+				.getEntries()
+				.filter(
+					(entry: { type: string; customType?: string }) =>
+						entry.type === "custom" && entry.customType === "pi-tasks:event",
+				).length;
+
+			const rejected = await update.execute(
+				"native-scope-rejected",
+				{ task_id: "T1", scope: "within_step" },
+				undefined,
+				undefined,
+			);
+			expect(rejected.isError).toBe(true);
+			expect(rejected.content[0]?.text).toContain("retry_with: task_update");
+			expect(rejected.details).toMatchObject({
+				retry_with: "task_update",
+				minimum_params: {
+					activity: "<meaningful activity performed>",
+					scope: "within_step",
+				},
+			});
+			expect(
+				active.sessionManager
+					.getEntries()
+					.filter(
+						(entry: { type: string; customType?: string }) =>
+							entry.type === "custom" && entry.customType === "pi-tasks:event",
+					),
+			).toHaveLength(persistedBefore);
+
+			const corrected = await update.execute(
+				"native-scope-corrected",
+				{
+					task_id: "T1",
+					activity: "Inspected the current fixture",
+					scope: "within_step",
+				},
+				undefined,
+				undefined,
+			);
+			expect(corrected.isError).not.toBe(true);
+			const sessionFile = active.sessionManager.getSessionFile();
+			assert.ok(sessionFile);
+			await waitForPersistedTaskEvent(sessionFile, "task.updated");
+			expect(
+				active.sessionManager
+					.getEntries()
+					.filter(
+						(entry: { type: string; customType?: string }) =>
+							entry.type === "custom" && entry.customType === "pi-tasks:event",
+					),
+			).toHaveLength(persistedBefore + 1);
 		} finally {
 			active.session.dispose();
 		}
