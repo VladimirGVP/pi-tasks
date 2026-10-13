@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Replaced impossible `task_decompose` guidance at the maximum decomposition depth with a consistent explicit blocker recovery across resume, next, focus, granularity, state, and rejection outputs.
 
 ## [0.2.7] - 2026-09-10
 

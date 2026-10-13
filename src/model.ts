@@ -16,6 +16,7 @@ export type TaskStepGranularityStatus =
 	| "atomic"
 	| "deferred";
 
+export const MAX_DECOMPOSITION_DEPTH = 4;
 export type VerificationLevel =
 	| "not_verified"
 	| "static_read"
@@ -107,6 +108,15 @@ export interface TaskStep {
 	note?: string;
 	startedAt?: string;
 	completedAt?: string;
+}
+
+export function isAtMaximumDecompositionDepth(
+	step: Pick<TaskStep, "decompositionStatus" | "depth">,
+): boolean {
+	return (
+		step.decompositionStatus !== "atomic" &&
+		step.depth >= MAX_DECOMPOSITION_DEPTH
+	);
 }
 
 export interface TaskStepInput {

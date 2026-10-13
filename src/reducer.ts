@@ -2,6 +2,8 @@ import {
 	type AcceptanceCriterion,
 	createEmptyState,
 	type EvidenceQuality,
+	isAtMaximumDecompositionDepth,
+	MAX_DECOMPOSITION_DEPTH,
 	type PlanQuality,
 	type Task,
 	type TaskEvent,
@@ -14,7 +16,6 @@ import {
 } from "./model.ts";
 
 const TERMINAL_STATUSES: TaskStatus[] = ["done", "cancelled"];
-const MAX_DECOMPOSITION_DEPTH = 4;
 const MIN_PLAN_QUALITY_SCORE = 80;
 const MAX_EVIDENCE_SUMMARY_LENGTH = 500;
 const MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH = 1000;
@@ -238,7 +239,9 @@ function decomposeStep(
 		task.nextAction =
 			activeStep.decompositionStatus === "atomic"
 				? activeStep.text
-				: `Break down ${activeStep.id}`;
+				: isAtMaximumDecompositionDepth(activeStep)
+					? `Block ${activeStep.id}; maximum decomposition depth reached`
+					: `Break down ${activeStep.id}`;
 	} else {
 		delete task.currentStep;
 		delete task.nextAction;
@@ -805,6 +808,11 @@ function updatePlanStep(
 		event.stepStatus === "done" &&
 		currentStep.decompositionStatus !== "atomic"
 	) {
+		if (isAtMaximumDecompositionDepth(currentStep)) {
+			throw new TaskTransitionError(
+				`Plan step ${currentStep.id} reached maximum decomposition depth while still non-atomic; block the task and carry the remaining scope into a flat successor task`,
+			);
+		}
 		throw new TaskTransitionError(
 			`Plan step ${currentStep.id} is ${currentStep.decompositionStatus}; use task_decompose until it is atomic before done`,
 		);

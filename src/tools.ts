@@ -1,18 +1,19 @@
 import { createEventId, SequentialIdGenerator } from "./ids.ts";
-import type {
-	AcceptanceCriterion,
-	EvidenceQuality,
-	EvidenceType,
-	Task,
-	TaskDecision,
-	TaskEvent,
-	TaskEvidence,
-	TaskPriority,
-	TaskState,
-	TaskStatus,
-	TaskStepInput,
-	TaskStepStatus,
-	VerificationLevel,
+import {
+	type AcceptanceCriterion,
+	type EvidenceQuality,
+	type EvidenceType,
+	isAtMaximumDecompositionDepth,
+	type Task,
+	type TaskDecision,
+	type TaskEvent,
+	type TaskEvidence,
+	type TaskPriority,
+	type TaskState,
+	type TaskStatus,
+	type TaskStepInput,
+	type TaskStepStatus,
+	type VerificationLevel,
 } from "./model.ts";
 import type {
 	ExtensionAPI,
@@ -405,7 +406,7 @@ export function registerTaskTools(
 			"Call task_focus before implementation, verification, or step completion work.",
 			"Smart models: compare intended work to the current step lock before acting; record drift before off-step work.",
 			"Weak models: copy the current step ID, criterion IDs, and evidence IDs exactly into the next tool call.",
-			"If Granularity is not atomic, use task_decompose before doing implementation work.",
+			"If Granularity is not atomic, follow the displayed next action; decompose below the depth limit, or explicitly block at the limit.",
 			"If intended work does not match the active step, record scope_change or off_plan with task_update first.",
 			"Use task_evidence before marking an evidence-required step done.",
 		],
@@ -429,7 +430,7 @@ export function registerTaskTools(
 			"Smart models: trust the persisted resume contract after compaction; do not reconstruct stale plan state from memory.",
 			"Weak models: read recommendedTool, blockedTools, and minimumParams, then call only the recommended tool.",
 			"Follow next allowed actions; do not complete tasks while verification gaps remain.",
-			"Use task_decompose when the resume instruction says the current step is not atomic.",
+			"Use task_decompose when the resume instruction says the current step is not atomic; at maximum depth, use the displayed task_update blocker recovery instead.",
 		],
 		parameters: Type.Object({}),
 		execute: async () => {
@@ -497,9 +498,9 @@ export function registerTaskTools(
 		promptGuidelines: [
 			"Use this before implementation when task_focus shows a non-atomic step.",
 			"Smart models: classify any hidden subtask, second output, or second verification method as non-atomic.",
-			"Weak models: if any atomicity field is false, call task_decompose instead of executing the step.",
+			"Weak models: follow the returned next action; decompose below the depth limit, or block at the limit.",
 			"Atomic means one agent action, one observable output, one verification method, and no hidden subtasks.",
-			"If the step is not atomic, call task_decompose with smaller child steps.",
+			"If the step is not atomic, call task_decompose with smaller child steps unless the returned guidance says the maximum depth was reached.",
 		],
 		parameters: Type.Object({
 			task_id: Type.Optional(Type.String()),
@@ -534,7 +535,9 @@ export function registerTaskTools(
 					`Reason: ${check.reason}`,
 					step.decompositionStatus === "atomic"
 						? "Next allowed action: task_focus or execution work"
-						: `Next allowed action: task_decompose ${step.id}`,
+						: isAtMaximumDecompositionDepth(step)
+							? `Next allowed action: task_update ${step.id} to blocked; maximum decomposition depth reached`
+							: `Next allowed action: task_decompose ${step.id}`,
 				].join("\n"),
 				buildTaskResume(state),
 			);
@@ -556,6 +559,7 @@ export function registerTaskTools(
 			"Omit child step criterionIds unless you are carrying forward known generated IDs from task_focus or task_resume.",
 			"Only mark a child atomic when it truly has one action, one output, one verification method, and no hidden subtasks.",
 			"Do not use task_decompose for execution evidence; record execution evidence with task_evidence.",
+			"At maximum decomposition depth, do not retry task_decompose; explicitly block the task and carry remaining scope into a flat successor task.",
 		],
 		parameters: Type.Object({
 			task_id: Type.String(),
@@ -637,7 +641,7 @@ export function registerTaskTools(
 			"Use step_id with step_status=done when the current planned step is finished.",
 			"Smart models: record one state transition per call; do not bundle drift, evidence, and completion into one update.",
 			"Weak models: use task_focus current step_id; for done, include step_evidence_ids when evidence was just recorded.",
-			"Only atomic steps can be marked done; use task_decompose first if a step still needs breakdown.",
+			"Only atomic steps can be marked done; use task_decompose below the depth limit, or explicitly block at the limit.",
 			"Evidence-required steps need linked evidence before step_status=done.",
 			"Do not skip ahead; ordered plan steps must be completed or skipped in the displayed order.",
 			"Use activity with scope=within_step, scope_change, or off_plan to document meaningful work and drift.",

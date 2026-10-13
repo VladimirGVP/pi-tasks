@@ -604,6 +604,153 @@ describe("registered task tools", () => {
 		expect(store.getState().tasks.T1?.currentStep).toBe("Run package dry-run");
 	});
 
+	it("recovers explicitly when a non-atomic step reaches maximum decomposition depth", async () => {
+		const { tools, entries, ctx, store } = createHarness();
+		const plan = requireTool(tools, "task_plan");
+		const check = requireTool(tools, "task_granularity_check");
+		const decompose = requireTool(tools, "task_decompose");
+		const update = requireTool(tools, "task_update");
+		const focus = requireTool(tools, "task_focus");
+		const next = requireTool(tools, "task_next");
+		const resume = requireTool(tools, "task_resume");
+		const childStep = {
+			text: "Inspect the synthetic fixture",
+			expectedOutput: "A synthetic inspection record",
+			decompositionStatus: "deferred",
+		};
+
+		await execute(
+			plan,
+			{
+				title: "Depth recovery",
+				objective: "Recover from the maximum decomposition depth",
+				acceptance_criteria: ["Recovery names an executable next tool"],
+				plan_steps: [
+					{
+						...childStep,
+						allowedActions: ["Read synthetic fixture"],
+					},
+				],
+			},
+			ctx,
+		);
+
+		let stepId = "T1-S1";
+		for (let depth = 0; depth < 4; depth += 1) {
+			const decomposed = await execute(
+				decompose,
+				{
+					task_id: "T1",
+					step_id: stepId,
+					reason: "Reduce one synthetic layer",
+					child_steps: [childStep, { ...childStep }],
+				},
+				ctx,
+			);
+			expect(decomposed.isError).not.toBe(true);
+			stepId += ".1";
+		}
+
+		expect(store.getState().tasks.T1?.nextAction).toContain(
+			"maximum decomposition depth reached",
+		);
+		const resumed = await execute(resume, {}, ctx);
+		expect(resumed.details).toMatchObject({
+			mode: "blocked",
+			recommendedTool: "task_update",
+			nextAllowedActions: ["task_update"],
+			minimumParams: {
+				task_id: "T1",
+				status: "blocked",
+				blocker: {
+					blockedBy: "ambiguity",
+				},
+			},
+		});
+		const focused = await execute(focus, {}, ctx);
+		const nextResult = await execute(next, {}, ctx);
+		const checked = await execute(
+			check,
+			{ task_id: "T1", step_id: stepId },
+			ctx,
+		);
+		expect(resumed.content[0]?.text).toContain("Do now: task_update");
+		expect(resumed.content[0]?.text).toContain("maximum decomposition depth");
+		expect(focused.content[0]?.text).toContain(
+			"Next allowed action: task_update",
+		);
+		expect(nextResult.content[0]?.text).toContain(
+			"Only next tool: task_update",
+		);
+		expect(checked.content[0]?.text).toContain(
+			"Next allowed action: task_update",
+		);
+
+		const persistedAtLimit = entries.length;
+		const rejectedDone = await execute(
+			update,
+			{ task_id: "T1", step_id: stepId, step_status: "done" },
+			ctx,
+		);
+		expect(rejectedDone.isError).toBe(true);
+		expect(rejectedDone.content[0]?.text).toContain(
+			"maximum decomposition depth while still non-atomic",
+		);
+		expect(rejectedDone.details).toMatchObject({
+			retry_with: "task_update",
+			minimum_params: {
+				status: "blocked",
+			},
+		});
+		expect(entries).toHaveLength(persistedAtLimit);
+
+		const rejectedDecompose = await execute(
+			decompose,
+			{
+				task_id: "T1",
+				step_id: stepId,
+				reason: "Try one more layer",
+				child_steps: [childStep, { ...childStep }],
+			},
+			ctx,
+		);
+		expect(rejectedDecompose.isError).toBe(true);
+		expect(rejectedDecompose.details).toMatchObject({
+			retry_with: "task_update",
+			minimum_params: {
+				task_id: "T1",
+				status: "blocked",
+			},
+			resume: {
+				recommendedTool: "task_update",
+			},
+		});
+		expect(entries).toHaveLength(persistedAtLimit);
+
+		const blocked = await execute(
+			update,
+			{
+				task_id: "T1",
+				status: "blocked",
+				blocker: {
+					reason: "Plan step remains non-atomic at maximum decomposition depth",
+					blockedBy: "ambiguity",
+					neededToUnblock:
+						"Create a flat successor task with the remaining scope",
+				},
+			},
+			ctx,
+		);
+		expect(blocked.isError).not.toBe(true);
+		expect(store.getState().tasks.T1?.status).toBe("blocked");
+		expect(store.getState().activeTaskId).toBeUndefined();
+		const afterBlock = await execute(resume, {}, ctx);
+		expect(afterBlock.details).toMatchObject({
+			mode: "planning",
+			recommendedTool: "task_plan",
+		});
+	});
+
 	it("checkpoints resume state as a snapshot custom entry", async () => {
 		const { tools, entries, ctx } = createHarness();
 		const plan = requireTool(tools, "task_plan");

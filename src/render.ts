@@ -1,11 +1,12 @@
-import type {
-	Task,
-	TaskExecutionMode,
-	TaskResumeContext,
-	TaskResumeStep,
-	TaskState,
-	TaskStatus,
-	TaskStep,
+import {
+	isAtMaximumDecompositionDepth,
+	type Task,
+	type TaskExecutionMode,
+	type TaskResumeContext,
+	type TaskResumeStep,
+	type TaskState,
+	type TaskStatus,
+	type TaskStep,
 } from "./model.ts";
 import { hasBlockingFailedEvidence } from "./reducer.ts";
 
@@ -177,7 +178,11 @@ export function formatTaskFocus(state: TaskState): string {
 			);
 		}
 		if (step.decompositionStatus !== "atomic") {
-			lines.push(`Next allowed action: task_decompose ${step.id}`);
+			lines.push(
+				isAtMaximumDecompositionDepth(step)
+					? `Next allowed action: task_update ${step.id} to blocked; maximum decomposition depth reached`
+					: `Next allowed action: task_decompose ${step.id}`,
+			);
 		}
 	}
 	const gaps = getVerificationGaps(task);
@@ -433,6 +438,9 @@ function getCurrentOpenStep(task: Task): TaskStep | undefined {
 
 function getNextAllowedActions(step: TaskStep, hasBlockers: boolean): string[] {
 	if (hasBlockers) return ["task_update"];
+	if (isAtMaximumDecompositionDepth(step)) {
+		return ["task_update"];
+	}
 	if (step.decompositionStatus !== "atomic") {
 		return ["task_decompose", "task_decision", "task_update"];
 	}
@@ -452,6 +460,7 @@ function getExecutionMode(
 ): TaskExecutionMode {
 	if (hasBlockers || task.status === "blocked") return "blocked";
 	if (!step) return gaps.length > 0 ? "verifying" : "completing";
+	if (isAtMaximumDecompositionDepth(step)) return "blocked";
 	if (step.decompositionStatus !== "atomic") return "decomposing";
 	if (step.evidenceRequired && step.evidenceIds.length === 0)
 		return "verifying";
@@ -464,7 +473,11 @@ function getRecommendedTool(
 ): string {
 	if (mode === "planning") return "task_plan";
 	if (mode === "blocked") return "task_update";
-	if (mode === "decomposing") return "task_decompose";
+	if (mode === "decomposing") {
+		return step && isAtMaximumDecompositionDepth(step)
+			? "task_update"
+			: "task_decompose";
+	}
 	if (mode === "verifying") return "task_evidence";
 	if (mode === "completing") return "task_complete";
 	return step?.allowedActions[0] ?? "task_update";
@@ -490,6 +503,22 @@ function getMinimumParams(
 			task_id: task.id,
 			step_id: step.id,
 			child_steps: ["<2+ atomic child steps>"],
+		};
+	}
+	if (
+		recommendedTool === "task_update" &&
+		step &&
+		isAtMaximumDecompositionDepth(step)
+	) {
+		return {
+			task_id: task.id,
+			status: "blocked",
+			blocker: {
+				reason: `Plan step ${step.id} remains non-atomic at maximum decomposition depth`,
+				blockedBy: "ambiguity",
+				neededToUnblock:
+					"Create a flat successor task carrying the remaining scope and existing evidence references",
+			},
 		};
 	}
 	if (recommendedTool === "task_evidence") {
@@ -564,7 +593,9 @@ function buildResumeInstruction(
 			: "No open step remains. Use task_complete with supporting evidence.";
 	}
 	if (step.decompositionStatus !== "atomic") {
-		return `Resume by decomposing ${step.id}; do not execute or mark it done until it is atomic.`;
+		return isAtMaximumDecompositionDepth(step)
+			? `Block ${step.id} with task_update instead of decomposing again; carry the remaining scope and existing evidence references into an explicitly planned flat successor task.`
+			: `Resume by decomposing ${step.id}; do not execute or mark it done until it is atomic.`;
 	}
 	if (step.evidenceRequired && step.evidenceIds.length === 0) {
 		return `Resume ${step.id} by performing one allowed action, then record step-scoped evidence with task_evidence.step_ids before task_update done.`;
