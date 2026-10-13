@@ -119,6 +119,14 @@ metadata.
 | `task_decision` | Record explicit user decisions |
 | `task_complete` | Close a task (only if all gates pass) |
 
+### Recovery contracts
+
+- Decomposition stops at depth 4. A still-non-atomic step then recommends an explicit `task_update` blocker so its remaining scope can be planned as a flat successor; pi-tasks never marks it done or creates the successor automatically.
+- Evidence fields expose the same limits enforced by the reducer: summaries 500 characters, observed output 1,000, and each reference/source/command 300. Retry templates preserve valid values and replace invalid over-limit values with explicit placeholders.
+- `task_update.scope` requires `activity`; `scope_change` and `off_plan` also require `scope_reason`. Missing fields return a targeted `task_update` recovery using the public snake_case parameter names.
+- Plan quality still rejects broad or compound actions, but action-like filename segments such as `fixtures/fix.json`, `update.json`, and `then.json` are treated as paths rather than instructions.
+
+
 ## Completion Gates
 
 `task_complete` rejects when:
@@ -232,12 +240,12 @@ blockers, and evidence references; custom UI extensions should keep them local.
 - Step-level contracts with expected output, linked criteria, required evidence, and allowed actions
 - Plan quality gate rejects vague, unverifiable, or over-broad atomic steps
 - Stricter atomic scoring rejects compound wording (`and`, `then`, `並且`, `然後`)
-- Recursive decomposition gate for non-atomic steps
+- Recursive decomposition gate for non-atomic steps, with explicit blocker recovery at depth 4
 - Step-scoped evidence through `task_evidence.step_ids`
 - Current-step evidence lock unless explicit `override_reason` is supplied
 - Evidence quality gate: traceable, reproducible, with artifact references
-- Evidence budget gate: oversized text is rejected to keep context lean
-- Tool rejections include structured recovery details + `task_resume` guidance
+- Evidence budget gate with schema-visible limits and bounded retry templates
+- Tool rejections include structured recovery details and targeted correction before `task_resume` guidance
 - `task_next` one-step weak-model contract with mode, current-step lock, recommended tool, blocked tools, minimum params
 - Scope drift recording for `scope_change` and `off_plan` activity
 - Derived progress from completed steps, satisfied criteria, and evidence
@@ -253,9 +261,9 @@ blockers, and evidence references; custom UI extensions should keep them local.
 Local verification suite:
 
 - `PI_SDK_ROOT=/path/to/@earendil-works/pi-coding-agent npm run release:check` (typecheck + lint + unit/native tests + build + import smoke + pack + audit)
-- Real Pi dogfood passed on 2026-06-18, 2026-06-19, 2026-06-20, and 2026-06-23
+- Real Pi dogfood most recently passed on 2026-10-14.
 
-Dogfood coverage includes: task lifecycle, evidence enforcement, ordered step rejection, structured plan steps, recursive decomposition, compaction-safe resume, duplicate evidence rejection, blocked task display, forked-session replay, tarball install, and weak-model smoke.
+Dogfood coverage includes: task lifecycle, evidence enforcement and bounded retry recovery, ordered step rejection, path-token plan quality, maximum-depth blocker recovery, targeted scope recovery, recursive decomposition, compaction-safe resume, duplicate evidence detection, decision/blocker rendering, forked-session replay, live `/tasks detail`, clean `/quit`, tarball install, and English/Traditional Chinese weak-model smoke.
 
 ## Documentation
 

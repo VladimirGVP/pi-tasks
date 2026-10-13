@@ -975,6 +975,106 @@ env PI_CODING_AGENT_SESSION_DIR=/private/tmp/pi-tasks-release-026-installed/sess
 
 Observed result: clean tarball install supported `import('pi-tasks')`; installed runtime accepted `E1 evidence integration_test true: CLI returned MATCH Done/Done`; task `T1` completed at `100%`.
 
+## 0.2.8 Release Dogfood (2026-10-14)
+
+Release candidate gate:
+
+```sh
+PI_SDK_ROOT=/tmp/pi-tasks-sdk-1.2.0/node_modules/@earendil-works/pi-coding-agent \
+  npm run release:check
+```
+
+Observed result: passed strict typecheck, non-mutating Biome result, 88 unit tests, 7 native Pi SDK tests, build, source/dist import smoke, `npm pack --dry-run`, clean tarball install/import, and `npm audit --audit-level=low` with zero vulnerabilities.
+
+English and Traditional Chinese fixed weak-model prompts:
+
+```sh
+pi --provider openai-codex --model gpt-5.5 \
+  --no-extensions --extension ./index.ts --no-builtin-tools \
+  --tools task_resume,task_next,task_plan,task_evidence,task_update,task_complete,task_list \
+  --session-dir /private/tmp/pi-tasks-release-028/sessions \
+  --session-id release-028-weak-en-final --name release-028-weak-en-final \
+  -p @docs/dogfood-prompts/weak-model-en.md \
+  "Execute only the Source Extension Hardening prompt exactly and report the observed tool results."
+
+pi --provider openai-codex --model gpt-5.5 \
+  --no-extensions --extension ./index.ts --no-builtin-tools \
+  --tools task_resume,task_next,task_plan,task_evidence,task_update,task_complete,task_list \
+  --session-dir /private/tmp/pi-tasks-release-028/sessions \
+  --session-id release-028-weak-zh-final --name release-028-weak-zh-final \
+  -p @docs/dogfood-prompts/weak-model-zh-TW.md \
+  "只執行 Source Extension Hardening 段落，精確遵循內容並回報觀察到的工具結果。"
+```
+
+Observed result: both prompts entered the task-free state through `task_resume`, rejected compound atomic wording, rejected future-step evidence against the `T1-S1` current-step lock, rejected summaries above 500 characters, and ended with `task_next` naming only `task_evidence`.
+
+Source lifecycle, recovery, resume, fork, and live TUI:
+
+```sh
+# The source lifecycle used four short noninteractive prompts against the same
+# release-028-lifecycle session for creation, recovery, evidence, update,
+# decision, blocker, completion, and task-list checks. The exact inputs and
+# tool results remain in the persisted Pi JSONL session.
+
+pi --provider openai-codex --model gpt-5.5 \
+  --no-extensions --extension ./index.ts --no-builtin-tools \
+  --tools task_resume,task_list \
+  --session-dir /private/tmp/pi-tasks-release-028/sessions \
+  --session-id release-028-lifecycle --name release-028-resume \
+  -p "Call task_list with include_evidence true and report the restored task status, progress, criterion count, and evidence IDs."
+
+pi --provider openai-codex --model gpt-5.5 \
+  --no-extensions --extension ./index.ts --no-builtin-tools \
+  --tools task_resume,task_list \
+  --session-dir /private/tmp/pi-tasks-release-028/sessions \
+  --fork release-028-lifecycle --name release-028-fork \
+  -p "Call task_list with include_evidence true and report the replayed task status, progress, criterion count, and evidence IDs."
+
+pi --provider openai-codex --model gpt-5.5 \
+  --no-extensions --extension ./index.ts \
+  --session-dir /private/tmp/pi-tasks-release-028/sessions \
+  --session-id release-028-lifecycle --name release-028-interactive
+# In the TUI: /tasks detail, then /quit.
+```
+
+Observed result: a real source session accepted the concrete `fixtures/fix.json` plan at quality 100; rejected an out-of-order `T1-S2` update; returned targeted `task_update` recovery for missing `scope_reason`; preserved `task_plan path-keyword acceptance` in the rejected dogfood evidence retry; deduplicated the corrected evidence to `E2`; rendered decision `D1` and blocker `T1-B1`; resolved drift warnings; and completed `T1` at 100% with criterion `1/1` and two evidence records. Same-session resume and fork both restored the completed task. Live `/tasks detail` rendered both evidence records, the resolved blocker, and the decision; `/quit` exited with code 0.
+
+Maximum decomposition depth:
+
+```sh
+pi --provider openai-codex --model gpt-5.5 \
+  --no-extensions --extension ./index.ts --no-builtin-tools \
+  --tools task_resume,task_next,task_plan,task_focus,task_granularity_check,task_decompose,task_update \
+  --session-dir /private/tmp/pi-tasks-release-028/sessions \
+  --session-id release-028-depth --name release-028-depth \
+  -p "Run a real maximum-depth recovery dogfood: create one deferred step, decompose the current first child four times, compare every next-action surface, reject a fifth decomposition, apply the explicit blocker recovery, and confirm task_plan is available without marking work done or creating a successor."
+```
+
+Observed result: the current step reached `T1-S1.1.1.1.1` at depth 4. `task_resume`, `task_next`, `task_focus`, and `task_granularity_check` all selected `task_update`; the fifth decomposition was rejected with `retry_with: task_update` and no new persisted decomposition; explicit blocking cleared the active task; the next resume recommended `task_plan`. No unfinished step was marked done and no successor was created automatically.
+
+Installed package smoke:
+
+```sh
+mkdir -p /private/tmp/pi-tasks-release-028-installed/tarball \
+  /private/tmp/pi-tasks-release-028-installed/consumer \
+  /private/tmp/pi-tasks-release-028-installed/sessions
+npm pack --pack-destination /private/tmp/pi-tasks-release-028-installed/tarball
+cd /private/tmp/pi-tasks-release-028-installed/consumer
+npm init -y
+npm install /private/tmp/pi-tasks-release-028-installed/tarball/pi-tasks-0.2.8.tgz
+node -e "import('pi-tasks')"
+npm audit --audit-level=low
+pi --provider openai-codex --model gpt-5.5 \
+  --no-extensions --extension ./node_modules/pi-tasks/dist/index.js \
+  --no-builtin-tools --tools task_resume,task_plan \
+  --session-dir /private/tmp/pi-tasks-release-028-installed/sessions \
+  --session-id release-028-installed-weak --name release-028-installed-weak \
+  -p @/Users/chun/Projects/pi-tasks/docs/dogfood-prompts/weak-model-en.md \
+  "Execute only the Installed Package Smoke prompt exactly and report the observed tool results."
+```
+
+Observed result: `pi-tasks-0.2.8.tgz` installed and imported in a clean consumer with zero audit vulnerabilities. The installed extension exposed `task_resume`, recommended `task_plan`, rejected `Run tests and update docs`, and returned `retry_with: task_plan` plus `do_not_retry_same_call: true`.
+
 ## Package Gates
 
 Also passed across release gates:
@@ -1012,10 +1112,14 @@ Also passed across release gates:
 - 0.2.6 source vague-evidence lifecycle, same-session resume, fork replay, live `/tasks detail`, and clean `/quit`
 - 0.2.6 clean tarball install plus installed-package vague-evidence smoke through `./node_modules/pi-tasks/dist/index.js`
 - 0.2.6 English and Traditional Chinese prompt dogfood for vague-summary rejection and concrete observed-summary acceptance
+- 0.2.8 `npm run release:check` with 88 unit tests, 7 native SDK tests, clean tarball install/import, and zero-vulnerability audit
+- 0.2.8 source issue-recovery lifecycle, same-session resume, fork replay, live `/tasks detail`, and clean `/quit`
+- 0.2.8 clean tarball install plus installed-extension structured-recovery smoke through `./node_modules/pi-tasks/dist/index.js`
+- 0.2.8 English and Traditional Chinese fixed prompts for compound-plan, current-step-lock, and evidence-budget rejection
 
 ## Remaining Runtime Coverage
 
-No remaining runtime coverage gaps are known for the 0.1.0, 0.2.0, or 0.2.5 release scope.
+No remaining runtime coverage gaps are known for the 0.2.8 release scope.
 
 Known runtime note:
 

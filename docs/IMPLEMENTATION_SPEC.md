@@ -275,9 +275,10 @@ Rules:
 - During new task creation, agents should omit `plan_steps.criterionIds` unless generated criterion IDs are already known. Omitted criterion IDs link the step to all task criteria after IDs such as `T1-AC1` are generated.
 - Structured `plan_steps` should also include a granularity check. A step is executable only when it is `atomic`.
 - Atomic steps must not bundle obvious sequential work. The quality gate rejects compound wording such as `and`, `then`, `also`, `並且`, `然後`, `接著`, `以及`, or `同時` in atomic step text, expected output, or allowed actions.
+- Action-like words adjacent to path punctuation are excluded from vague/compound matching, so filenames such as `fixtures/fix.json`, `update.json`, and `then.json` do not change an otherwise concrete step's quality score. The same words used as instructions, including before sentence punctuation, remain guarded.
 - The first step is active when the task is activated.
 - Agents must complete or skip the current open step before advancing.
-- Non-atomic steps must be recursively decomposed with `task_decompose` before they can be marked `done`.
+- Non-atomic steps must be recursively decomposed with `task_decompose` before they can be marked `done`. At maximum depth 4, every next-action surface instead directs the agent to block the task explicitly and carry remaining scope/evidence references into a manually planned flat successor.
 - Evidence-required steps cannot be marked `done` until linked evidence exists.
 - Skipping a step requires a reason or note.
 - Decomposition replaces a parent step with ordered child steps such as `T1-S1.1` and preserves parent traceability through `parentStepId`.
@@ -528,7 +529,7 @@ Behavior:
 
 - no mutation,
 - returns the step atomicity booleans and rationale,
-- tells the agent to call `task_decompose` when the step is not atomic.
+- tells the agent to call `task_decompose` when the step is not atomic and below depth 4; at the limit it returns the explicit `task_update` blocker recovery.
 
 ### 8.7 `task_decompose`
 
@@ -548,8 +549,9 @@ Behavior:
 - appends a decomposition event,
 - requires at least two child steps,
 - validates each child step's expected output, criteria links, evidence requirement, allowed actions, and granularity check,
-- rejects decomposition beyond the maximum supported depth,
-- replaces the parent step with ordered child steps such as `T1-S1.1`,
+- rejects decomposition beyond maximum depth 4,
+- at the limit, preserves the unfinished step and returns an explicit blocker path instead of another decomposition or automatic successor creation,
+- replaces a below-limit parent step with ordered child steps such as `T1-S1.1`,
 - keeps the first child in the parent's current status so focus can continue.
 
 ### 8.8 `task_list`
@@ -611,10 +613,12 @@ Behavior:
 - validates transition,
 - rejects attempts to update a later plan step before the current open step,
 - advances to the next plan step after the current step is marked `done` or `skipped`,
-- rejects `done` for non-atomic steps; the agent must call `task_decompose` first,
+- rejects `done` for non-atomic steps; below depth 4 the agent must call `task_decompose`, while a depth-4 step must use the explicit blocker recovery,
 - rejects `done` for evidence-required steps without linked evidence,
 - rejects skipping a plan step without a reason or note,
-- records warnings for `scope_change` or `off_plan` activity and requires `scope_reason`,
+- requires non-empty `activity` whenever `scope` is supplied; `scope_change` and `off_plan` also require `scope_reason`,
+- returns targeted snake_case `task_update` minimum parameters for either missing scope field rather than the unrelated resume recommendation,
+- records warnings for `scope_change` or `off_plan` activity,
 - resolves exact warning strings through `resolve_warnings`,
 - appends event,
 - updates widget/status.
@@ -643,7 +647,8 @@ Behavior:
 - appends evidence,
 - links evidence to explicit step IDs when provided,
 - rejects low-quality evidence that lacks traceability, reproducibility, required artifact references, or observed output for test/command/dogfood evidence,
-- rejects oversized evidence summaries, references, artifact refs, command strings, source strings, and observed output,
+- exposes and enforces limits of 500 characters for `summary`, 1,000 for `quality.observedOutput`, and 300 for each reference, artifact reference, source, or command,
+- returns command/test/dogfood retry templates that preserve valid supplied values and replace missing or over-limit values with explicit caller-supplied placeholders rather than truncation,
 - rejects evidence linked to a non-current step unless `override_reason` is supplied,
 - marks referenced criteria satisfied only when `passed: true`,
 - never marks task done by itself.
@@ -938,7 +943,7 @@ The goal can be marked complete only when:
 
 ## 20. Current Implementation Status
 
-As of 2026-06-18, the repo contains an MVP implementation for:
+As of 2026-10-14, the repo contains the implemented product for:
 
 - typed model and event contracts in `src/model.ts`,
 - pure reducer and transition validation in `src/reducer.ts`,
@@ -947,12 +952,12 @@ As of 2026-06-18, the repo contains an MVP implementation for:
 - plan quality and evidence quality gates for weak-model resistance,
 - `task_next` one-step weak-model guidance,
 - structured rejection recovery details with retry tool and minimum params,
-- stricter atomic step scoring for compound wording,
-- current-step evidence locking and evidence text budgets,
-- recursive decomposition gate with `task_granularity_check` and `task_decompose`,
+- stricter atomic step scoring for compound wording without path-token false positives,
+- current-step evidence locking and schema-visible evidence text budgets,
+- recursive decomposition through depth 4 with a consistent explicit blocker recovery at the cap,
 - `task_focus` current-step guidance before action,
 - `task_resume`, `task_checkpoint`, and snapshot resume fields for compaction-safe continuation,
-- scope drift recording for `scope_change` and `off_plan` activity,
+- targeted scope-field recovery plus drift recording for `scope_change` and `off_plan` activity,
 - duplicate evidence deduplication in tool execution and replay,
 - branch custom-entry replay in `src/store.ts`,
 - tool registration in `src/tools.ts`,
@@ -991,7 +996,7 @@ Verified with real Pi dogfood:
 
 Remaining runtime coverage:
 
-- none known for the 0.1.1 release scope.
+- none known for the 0.2.8 release scope.
 
 ## 21. Documentation Completeness Assessment
 
