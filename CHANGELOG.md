@@ -6,6 +6,7 @@
 - Replaced impossible `task_decompose` guidance at the maximum decomposition depth with a consistent explicit blocker recovery across resume, next, focus, granularity, state, and rejection outputs.
 - Declared runtime evidence text limits in the tool schema and made command/test/dogfood retry templates preserve required commands while replacing over-limit values with explicit caller-supplied placeholders.
 - Made scope-update field dependencies model-visible and changed missing `activity`/`scope_reason` rejections to return corrected `task_update` recovery parameters instead of unrelated resume tools.
+- Stopped plan-quality language guards from interpreting action-like path segments such as `fixtures/fix.json`, `update.json`, or `then.json` as vague or compound instructions while retaining broad and multi-action rejection controls.
 
 ## [0.2.7] - 2026-09-10
 

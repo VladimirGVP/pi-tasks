@@ -250,25 +250,108 @@ describe("task reducer", () => {
 		expect(state.tasks.T1.currentStep).toBe("Run package dry-run");
 	});
 
-	it("rejects compound atomic step wording", () => {
+	it.each(["Run tests and update docs", "Run tests then update docs"])(
+		"rejects compound atomic step wording %j",
+		(text) => {
+			expect(() =>
+				apply([
+					{
+						...created(),
+						planSteps: [
+							{
+								text,
+								expectedOutput: "Test result is recorded",
+								criterionIds: ["T1-AC1"],
+								evidenceRequired: true,
+								allowedActions: ["npm test"],
+								decompositionStatus: "atomic",
+								granularityCheck: atomicCheck,
+							},
+						],
+					},
+				]),
+			).toThrow("multiple actions");
+		},
+	);
+
+	it("accepts concrete plan paths whose segments resemble action words", () => {
+		const paths = [
+			"fixtures/sample.json",
+			"fixtures/fix.json",
+			"fixtures/update.json",
+			"fixtures/then.json",
+			"fixtures/整理.json",
+			"fixtures\\fix.json",
+			"fix.json",
+			"my-fix.json",
+			"then-output.json",
+			".update.json",
+		];
+		for (const path of paths) {
+			const state = apply([
+				{
+					...created(),
+					planSteps: [
+						{
+							text: `Read the SHA-256 digest of ${path}`,
+							expectedOutput: `The SHA-256 digest for ${path}`,
+							criterionIds: ["T1-AC1"],
+							evidenceRequired: true,
+							allowedActions: [`Read ${path} using sha256sum`],
+							decompositionStatus: "atomic",
+							granularityCheck: atomicCheck,
+						},
+					],
+				},
+			]);
+			expect(state.tasks.T1.planSteps[0]?.planQuality).toEqual({
+				score: 100,
+				issues: [],
+			});
+		}
+	});
+
+	it("accepts path-like action words in decomposed child steps", () => {
+		const paths = ["fixtures/fix.json", "fixtures/then.json"];
+		const state = apply([
+			coarseCreated(),
+			{
+				...decompose(),
+				childSteps: paths.map((path) => ({
+					text: `Read the SHA-256 digest of ${path}`,
+					expectedOutput: `The SHA-256 digest for ${path}`,
+					criterionIds: ["T1-AC1"],
+					evidenceRequired: true,
+					allowedActions: [`Read ${path} using sha256sum`],
+					decompositionStatus: "atomic",
+					granularityCheck: atomicCheck,
+				})),
+			},
+		]);
+		expect(
+			state.tasks.T1.planSteps.map((step) => step.planQuality.score),
+		).toEqual([100, 100]);
+	});
+
+	it("keeps rejecting genuinely broad plan wording", () => {
 		expect(() =>
 			apply([
 				{
 					...created(),
 					planSteps: [
 						{
-							text: "Run tests and update docs",
-							expectedOutput: "Test result is recorded",
+							text: "Fix the whole project",
+							expectedOutput: "Complete all fixes in the project",
 							criterionIds: ["T1-AC1"],
 							evidenceRequired: true,
-							allowedActions: ["npm test"],
+							allowedActions: ["Update project files"],
 							decompositionStatus: "atomic",
 							granularityCheck: atomicCheck,
 						},
 					],
 				},
 			]),
-		).toThrow("multiple actions");
+		).toThrow("vague or broad wording");
 	});
 
 	it("does not auto-link criterion evidence to multiple matching child steps", () => {

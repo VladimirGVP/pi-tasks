@@ -21,18 +21,18 @@ import {
 const TERMINAL_STATUSES: TaskStatus[] = ["done", "cancelled"];
 const MIN_PLAN_QUALITY_SCORE = 80;
 const COMPOUND_STEP_PATTERNS = [
-	/\b(and|then|also|plus|after that)\b/i,
+	/(?<![/\\._-])\b(and|then|also|plus|after that)\b(?![/\\._-])/i,
 	/[;&]/,
-	/並且|然後|接著|以及|同時|再來/,
+	/(?<![/\\._-])(?:並且|然後|接著|以及|同時|再來)(?![/\\._-])/,
 ];
 const VAGUE_PLAN_PATTERNS = [
-	/\b(do|handle|fix|improve|update|implement|complete|work on|deal with)\b/i,
-	/完成(全部|所有|整個)?/,
-	/處理(一下|全部|所有)?/,
-	/修好/,
-	/優化/,
-	/弄好/,
-	/整理/,
+	/(?<![/\\._-])\b(do|handle|fix|improve|update|implement|complete|work on|deal with)\b(?![/\\._-])/i,
+	/(?<![/\\._-])完成(全部|所有|整個)?(?![/\\._-])/,
+	/(?<![/\\._-])處理(一下|全部|所有)?(?![/\\._-])/,
+	/(?<![/\\._-])修好(?![/\\._-])/,
+	/(?<![/\\._-])優化(?![/\\._-])/,
+	/(?<![/\\._-])弄好(?![/\\._-])/,
+	/(?<![/\\._-])整理(?![/\\._-])/,
 ];
 const VAGUE_EVIDENCE_PATTERNS = [
 	/\b(done|looks good|seems ok|probably|should work)\b/i,
