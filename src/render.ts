@@ -8,7 +8,10 @@ import {
 	type TaskStatus,
 	type TaskStep,
 } from "./model.ts";
-import { hasBlockingFailedEvidence } from "./reducer.ts";
+import {
+	hasBlockingFailedEvidence,
+	validateVerifiedSupport,
+} from "./reducer.ts";
 
 const STATUS_ORDER: TaskStatus[] = [
 	"active",
@@ -233,11 +236,19 @@ export function buildTaskResume(state: TaskState): TaskResumeContext {
 			(decision) =>
 				`${decision.id}: ${compactDetail(decision.question)} -> ${compactDetail(decision.decision)}`,
 		);
+	const receiptGap = gaps.some((gap) => gap.startsWith("Receipt support:"));
 	const nextAllowedActions = step
 		? getNextAllowedActions(step, blockers.length > 0)
-		: ["task_complete"];
+		: receiptGap
+			? ["task_verify", "task_evidence", "task_resume"]
+			: gaps.length > 0
+				? ["task_evidence", "task_resume"]
+				: ["task_complete"];
 	const mode = getExecutionMode(task, step, blockers.length > 0, gaps);
-	const recommendedTool = getRecommendedTool(mode, step);
+	const recommendedTool =
+		!step && mode === "verifying" && receiptGap
+			? "task_verify"
+			: getRecommendedTool(mode, step);
 	return {
 		...(state.activeTaskId ? { activeTaskId: state.activeTaskId } : {}),
 		taskId: task.id,
@@ -420,6 +431,23 @@ export function getVerificationGaps(task: Task): string[] {
 			);
 		}
 	}
+	// Pure resume rendering checks binding presence, not filesystem freshness.
+	// Completion revalidates receipts against the live runtime before accepting.
+	if (task.evidence.length > 0) {
+		try {
+			validateVerifiedSupport(
+				task,
+				[],
+				task.evidence
+					.filter((evidence) => evidence.verification?.receiptId)
+					.map((evidence) => evidence.id),
+			);
+		} catch (error) {
+			gaps.push(
+				`Receipt support: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
 	if (task.evidence.length === 0) gaps.push("no evidence");
 	if (
 		task.evidence.length > 0 &&
@@ -521,6 +549,13 @@ function getMinimumParams(
 			},
 		};
 	}
+	if (recommendedTool === "task_verify") {
+		return {
+			task_id: task.id,
+			command: "<verification command producing report>",
+			artifactRefs: ["<local report file>"],
+		};
+	}
 	if (recommendedTool === "task_evidence") {
 		return {
 			task_id: task.id,
@@ -588,6 +623,9 @@ function buildResumeInstruction(
 		return "Resolve the blocker with task_update before continuing execution.";
 	}
 	if (!step) {
+		if (gaps.some((gap) => gap.startsWith("Receipt support:"))) {
+			return "Run task_verify, then bind its receiptId with task_evidence to affected criteria/steps (override_reason for closed steps; supersedes for failures). task_complete rechecks live freshness.";
+		}
 		return gaps.length > 0
 			? "No open step remains, but verification gaps remain. Resolve gaps before task_complete."
 			: "No open step remains. Use task_complete with supporting evidence.";

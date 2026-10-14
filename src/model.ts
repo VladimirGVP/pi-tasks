@@ -1,3 +1,5 @@
+import type { VerificationBinding } from "./verification.ts";
+
 export const TASK_EVENT_CUSTOM_TYPE = "pi-tasks:event";
 export const TASK_SNAPSHOT_CUSTOM_TYPE = "pi-tasks:snapshot";
 
@@ -50,17 +52,33 @@ export interface TaskEvidence {
 	passed: boolean | "unknown";
 	references: string[];
 	quality: EvidenceQuality;
+	/** Runtime-only binding, never accepted from tool parameters. */
+	verification?: VerificationBinding;
 	createdAt: string;
 	supersedes?: string[];
 }
 
 export interface EvidenceQuality {
+	/** ID returned by task_verify, resolved against current branch runtime entries. */
+	receiptId?: string;
 	source: string;
 	reproducible: boolean;
 	verifier: "agent" | "tool" | "user" | "external";
 	command?: string;
 	artifactRefs: string[];
 	observedOutput?: string;
+}
+
+export function evidenceQualityKey(quality: EvidenceQuality): string {
+	return JSON.stringify([
+		quality.receiptId,
+		quality.source.trim(),
+		quality.reproducible,
+		quality.verifier,
+		quality.command?.trim(),
+		[...new Set(quality.artifactRefs.map((ref) => ref.trim()))].sort(),
+		quality.observedOutput?.trim(),
+	]);
 }
 
 export interface AcceptanceCriterion {
@@ -172,6 +190,7 @@ export interface Task {
 	completedAt?: string;
 	cancelledAt?: string;
 	completionSummary?: string;
+	completionKind?: "verified_execution" | "forced" | "legacy_unverified";
 	warnings: string[];
 }
 
@@ -299,6 +318,8 @@ export interface TaskCompletedEvent extends TaskEventBase {
 		note?: string;
 	}>;
 	forceWithReason?: string;
+	/** Runtime-only current receipts, not an agent-supplied completion argument. */
+	verifiedEvidenceIds?: string[];
 }
 
 export interface TaskCancelledEvent extends TaskEventBase {

@@ -818,13 +818,26 @@ describe("registered task tools", () => {
 			{ task_id: "T1", step_id: "T1-S1", step_status: "done" },
 			ctx,
 		);
-		await execute(
+		const unbound = await execute(
 			complete,
 			{ task_id: "T1", summary: "done", evidence_ids: ["E1"] },
 			ctx,
 		);
+		expect(unbound.isError).toBe(true);
+		expect(store.getState().tasks.T1?.status).toBe("active");
+		await execute(
+			complete,
+			{
+				task_id: "T1",
+				summary: "legacy host gap",
+				evidence_ids: ["E1"],
+				force_with_reason: "This fake host has no runtime receipts",
+			},
+			ctx,
+		);
 
 		expect(store.getState().tasks.T1?.status).toBe("done");
+		expect(store.getState().tasks.T1?.completionKind).toBe("forced");
 		expect(entries).toHaveLength(5);
 		expect(ui.status).toBeUndefined();
 

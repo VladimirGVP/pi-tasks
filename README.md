@@ -71,7 +71,9 @@ task_focus → agent sees exactly what's in scope
     ↓
 task_update → step-by-step execution with evidence lock
     ↓
-task_evidence → attach proof before marking done
+task_verify → run native bash and persist a receipt for current code + reports
+    ↓
+task_evidence → link receiptId to steps and criteria before marking done
     ↓
 task_complete → only succeeds when all gates pass
 ```
@@ -115,7 +117,8 @@ metadata.
 | `task_decompose` | Break non-atomic steps into child steps |
 | `task_list` | List tasks with optional filtering |
 | `task_update` | Advance steps, record activity, flag scope drift |
-| `task_evidence` | Attach verification evidence to steps/criteria |
+| `task_verify` | Execute native bash; bind observed success to task, session, code and reports |
+| `task_evidence` | Attach evidence; resolve `quality.receiptId` against this session branch |
 | `task_decision` | Record explicit user decisions |
 | `task_complete` | Close a task (only if all gates pass) |
 
@@ -139,13 +142,60 @@ metadata.
 - Unresolved scope drift warnings remain
 - All evidence is only `not_verified`
 - Linked failing step/criterion evidence remains unresolved by a later passing `supersedes` rerun
+- Completion, satisfied criteria or required completed steps lack current runtime receipt-backed support
+- A passing rerun superseding failed evidence is no longer current
 
-Forced completion requires `force_with_reason` and produces a low-confidence warning.
+Forced completion requires `force_with_reason`, produces a low-confidence warning,
+and retains `completionKind: forced`. Generic warning resolution cannot clear that
+warning or convert forced completion into verified execution. A forced repeat of
+an already verified completion also becomes forced and is capped below 80.
 
 When a rerun passes after an honest failed gate, record the passing `task_evidence`
 with `supersedes: ["<failed evidence id>"]` and the same linked `step_ids` /
 `criterion_ids`; the failed evidence remains in lineage but no longer blocks
-completion.
+completion. Linked failures in skipped criteria/steps or optional steps still need
+a current verified superseder: skipping scope is not verification of its failure.
+
+### Runtime receipts (source candidate; not a published release)
+
+Call `task_verify` with `task_id`, a `command`, and `artifactRefs` (1–20 local
+report files). It runs `bash` through native `ctx.executeTool`, preserving tool
+hooks and tool availability restrictions. Only an observed, non-error native
+outcome with numeric `exit_code: 0` and execution duration can issue a receipt.
+Then copy its `id` to `task_evidence.quality.receiptId`, using the same command
+and report paths, and link the evidence to the relevant steps and criteria.
+For closed steps, the existing explicit `override_reason` path remains available.
+
+Receipts are local `pi-tasks:verification-v1` branch entries, not caller-supplied
+objects or arbitrary call IDs. Binding is checked before deduplication and again
+at completion. Checks include task contract, session/cwd, Git HEAD plus tracked
+and non-ignored source content, report existence/content hashes, and branch
+membership. Reports must be nonempty regular files newly written by this run;
+explicit failed outcomes in JSON are rejected. Store reports in a Git-ignored
+output directory or outside the source tree so generating them does not change
+the source fingerprint. Source changes during execution invalidate the run.
+Historical claims remain readable but cannot authorize a new ordinary completion.
+Historical Done is preserved by both branch replay and `replayTaskEvents` as
+`legacy_unverified` history, not retroactively certified. Resume guidance identifies
+missing receipt bindings and directs closed-step work to `task_verify` and
+`task_evidence`; this static guidance is not a filesystem freshness check.
+`task_complete` still rechecks the current source and reports.
+
+Boundaries: this proves observed execution and artifact freshness, **not** that
+the agent chose an adequate test or that the owner accepted the result. Local
+`verified_execution` must not automatically become board Done. Commands still
+require the same operator authority as ordinary bash. This is not a sandbox or
+protection from an actor rewriting session files/runtime code. Ignored dependencies,
+external services and data are not source-fingerprinted. Arbitrary text reports
+have no semantic pass/fail parser; a zero exit can still reflect a bad test.
+
+This candidate requires a committed Git repository (at most 20,000 source files /
+128 MiB) and reports at most 8 MiB each. Source symlinks/submodules fail closed.
+Non-Git work, unsupported native outcome formats, and hosts without compatible
+`ctx.executeTool` cannot obtain verified completion. Oh My Pi receipt execution is
+unverified. These are intentional unsupported cases, not permission to use force
+silently. No settings change, installed-release replacement or board migration is
+performed by these source changes.
 
 ## Token Efficiency
 
@@ -261,7 +311,8 @@ blockers, and evidence references; custom UI extensions should keep them local.
 Local verification suite:
 
 - `PI_SDK_ROOT=/path/to/@earendil-works/pi-coding-agent npm run release:check` (typecheck + lint + unit/native tests + build + import smoke + pack + audit)
-- Real Pi dogfood most recently passed on 2026-10-14.
+- Previous released behavior had a real Pi dogfood pass on 2026-10-14; it does not certify this receipt candidate.
+- Candidate native integration tests exercise nested bash, tool-call blocking, persisted receipts and same-session reload through the installed SDK without a model request. Live installed-package/TUI dogfood and release publication remain separate gates.
 
 Dogfood coverage includes: task lifecycle, evidence enforcement and bounded retry recovery, ordered step rejection, path-token plan quality, maximum-depth blocker recovery, targeted scope recovery, recursive decomposition, compaction-safe resume, duplicate evidence detection, decision/blocker rendering, forked-session replay, live `/tasks detail`, clean `/quit`, tarball install, and English/Traditional Chinese weak-model smoke.
 

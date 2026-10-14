@@ -97,12 +97,15 @@ function evidence(
 		source: "tool",
 		evidence: {
 			id: "E1",
+			// Reducer fixtures model trusted runtime input; tool-boundary tests use real receipts.
+			verification: { receiptId: "fixture-E1" },
 			type: "test",
 			level: "unit_test",
 			summary: "vitest passed",
 			passed: true,
 			references: ["npm test"],
 			quality: {
+				receiptId: "fixture-E1",
 				source: "vitest",
 				reproducible: true,
 				verifier: "tool",
@@ -137,12 +140,14 @@ function gateEvidence({
 		createdAt,
 		evidence: {
 			id,
+			...(passed ? { verification: { receiptId: `fixture-${id}` } } : {}),
 			type: "review",
 			level: "release_grade_e2e",
 			summary: `techlead gate ${result}`,
 			passed,
 			references: ["techlead gate"],
 			quality: {
+				...(passed ? { receiptId: `fixture-${id}` } : {}),
 				source: "techlead gate",
 				reproducible: true,
 				verifier: "user",
@@ -168,6 +173,7 @@ function complete(
 		source: "tool",
 		summary: "done",
 		evidenceIds: ["E1"],
+		verifiedEvidenceIds: params.evidenceIds ?? ["E1"],
 		...params,
 	};
 }
@@ -499,12 +505,14 @@ describe("task reducer", () => {
 				id: "T1-evidence-duplicate",
 				evidence: {
 					id: "E2",
+					verification: { receiptId: "fixture-E1" },
 					type: "test",
 					level: "unit_test",
 					summary: "vitest passed",
 					passed: true,
 					references: ["npm test"],
 					quality: {
+						receiptId: "fixture-E1",
 						source: "vitest",
 						reproducible: true,
 						verifier: "tool",

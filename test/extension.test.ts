@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -15,9 +17,14 @@ if (!sdkRoot) {
 // PI_SDK_ROOT selects the installed SDK version under test; a static import
 // would resolve the repository's dependencies instead of that release.
 const sdk = await import(pathToFileURL(join(sdkRoot, "dist/index.js")).href);
-const piAi = await import(
-	pathToFileURL(join(sdkRoot, "..", "pi-ai", "dist", "index.js")).href
-);
+// npm installs keep this ESM-only dependency nested; workspace installs may hoist it.
+const piAiEntry = [
+	join(sdkRoot, "node_modules", "@earendil-works", "pi-ai", "dist", "index.js"),
+	join(sdkRoot, "..", "pi-ai", "dist", "index.js"),
+].find(existsSync);
+if (!piAiEntry)
+	throw new Error("Cannot locate pi-ai in the selected SDK installation");
+const piAi = await import(pathToFileURL(piAiEntry).href);
 const taskRoot = resolve(import.meta.dirname, "..");
 const taskToolNames = new Set([
 	"task_plan",
@@ -30,6 +37,7 @@ const taskToolNames = new Set([
 	"task_list",
 	"task_update",
 	"task_evidence",
+	"task_verify",
 	"task_decision",
 	"task_complete",
 ]);
@@ -188,6 +196,7 @@ async function createNativeSession(
 		tools?: string[];
 		excludeTools?: string[];
 		foreignTaskNotes?: boolean;
+		blockBash?: boolean;
 		noTools?: "all" | "builtin";
 	} = {},
 ) {
@@ -222,6 +231,14 @@ async function createNativeSession(
 }`,
 		);
 		extensionPaths.push(extensionPath);
+	}
+	if (options.blockBash) {
+		const blocker = join(base, "block-bash.js");
+		await writeFile(
+			blocker,
+			`export default function(pi) { pi.on("tool_call", event => event.toolName === "bash" ? {block:true, reason:"fixture policy denies bash"} : undefined); }`,
+		);
+		extensionPaths.push(blocker);
 	}
 	const eventBus = sdk.createEventBus();
 	eventBus.on(
@@ -261,6 +278,126 @@ async function createNativeSession(
 }
 
 describe("native Pi dynamic task tools", () => {
+	it.each([false, true])(
+		"native receipt/reload path respects tool_call blocking=%s",
+		async (blockBash) => {
+			const first = await createNativeSession({ blockBash });
+			let restored: Awaited<ReturnType<typeof createNativeSession>> | undefined;
+			try {
+				const git = (...args: string[]) =>
+					execFileSync("git", ["-C", first.cwd, ...args], { stdio: "pipe" });
+				git("init", "-q");
+				await writeFile(join(first.cwd, ".gitignore"), "reports/\n");
+				await writeFile(
+					join(first.cwd, "source.ts"),
+					"export const answer = 42;\n",
+				);
+				git("add", ".");
+				git(
+					"-c",
+					"user.name=Fixture",
+					"-c",
+					"user.email=fixture@example.invalid",
+					"-c",
+					"core.hooksPath=/dev/null",
+					"commit",
+					"-qm",
+					"fixture",
+				);
+				await mkdir(join(first.cwd, "reports"));
+				appendNativeToolCall(first.sessionManager);
+				await requireTool(first.session, "task_plan").execute(
+					"native-plan",
+					validPlan(),
+					undefined,
+					undefined,
+				);
+				const command = `printf '{"success":true}\\n' > reports/result.json`;
+				const artifactRefs = [join(first.cwd, "reports/result.json")];
+				// Direct tool invocation is model-free, but native nested calls still need an
+				// assistant request in the active transcript, not only on disk.
+				first.session.agent.state.messages =
+					first.sessionManager.buildSessionProjection().messages;
+				const verification = requireTool(first.session, "task_verify").execute(
+					"native-verify",
+					{ task_id: "T1", command, artifactRefs },
+					undefined,
+					undefined,
+				);
+				if (blockBash) {
+					await expect(verification).rejects.toThrow("observed native bash");
+					expect(
+						first.sessionManager
+							.getEntries()
+							.some(
+								(entry: { customType?: string }) =>
+									entry.customType === "pi-tasks:verification-v1",
+							),
+					).toBe(false);
+					return;
+				}
+				const verified = await verification;
+				expect(verified.isError).not.toBe(true);
+				const receiptId = (verified.details as { id: string }).id;
+				expect(receiptId).toBeTruthy();
+				const sessionFile = first.sessionManager.getSessionFile();
+				assert.ok(sessionFile);
+				expect(await readFile(sessionFile, "utf8")).toContain(
+					'"customType":"pi-tasks:verification-v1"',
+				);
+				first.session.dispose();
+				restored = await createNativeSession({ base: first.base, sessionFile });
+				const evidence = await requireTool(
+					restored.session,
+					"task_evidence",
+				).execute(
+					"native-evidence",
+					{
+						task_id: "T1",
+						type: "test",
+						level: "integration_test",
+						summary: "Observed native bash verification passed",
+						passed: "true",
+						references: artifactRefs,
+						criterion_ids: ["T1-AC1"],
+						step_ids: ["T1-S1"],
+						quality: {
+							source: "native bash",
+							reproducible: true,
+							verifier: "tool",
+							command,
+							artifactRefs,
+							receiptId,
+							observedOutput: "Native bash exit_code=0",
+						},
+					},
+					undefined,
+					undefined,
+				);
+				expect(evidence.isError).not.toBe(true);
+				await requireTool(restored.session, "task_update").execute(
+					"native-step",
+					{ task_id: "T1", step_id: "T1-S1", step_status: "done" },
+					undefined,
+					undefined,
+				);
+				const completed = await requireTool(
+					restored.session,
+					"task_complete",
+				).execute(
+					"native-complete",
+					{ task_id: "T1", summary: "Verified fixture", evidence_ids: ["E1"] },
+					undefined,
+					undefined,
+				);
+				expect(completed.isError).not.toBe(true);
+				expect(restored.events.at(-1)?.state?.tasks?.T1?.status).toBe("done");
+			} finally {
+				restored?.session.dispose();
+				first.session.dispose();
+			}
+		},
+	);
 	it("runs the persistent plan-to-event-to-new-session restore slice before broader cases", async () => {
 		const first = await createNativeSession();
 		try {

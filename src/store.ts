@@ -60,7 +60,7 @@ export function replayBranchEntries(entries: BranchEntry[]): ReplayResult {
 			continue;
 		}
 		try {
-			state = reduceTaskState(state, entry.data);
+			state = reduceTaskState(state, entry.data, { replay: true });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			malformedEvents.push(`Entry ${entry.id ?? entry.data.id}: ${message}`);

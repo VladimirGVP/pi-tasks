@@ -2,6 +2,7 @@ import {
 	type AcceptanceCriterion,
 	createEmptyState,
 	type EvidenceQuality,
+	evidenceQualityKey,
 	isAtMaximumDecompositionDepth,
 	MAX_DECOMPOSITION_DEPTH,
 	MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH,
@@ -54,7 +55,8 @@ const VAGUE_EVIDENCE_SHORT_SUMMARY_LENGTH = 60;
 
 export type TaskTransitionErrorCode =
 	| "scope_activity_required"
-	| "scope_reason_required";
+	| "scope_reason_required"
+	| "verification_receipt_required";
 
 export class TaskTransitionError extends Error {
 	readonly code: TaskTransitionErrorCode | undefined;
@@ -66,12 +68,16 @@ export class TaskTransitionError extends Error {
 	}
 }
 
-export function reduceTaskState(state: TaskState, event: TaskEvent): TaskState {
+export function reduceTaskState(
+	state: TaskState,
+	event: TaskEvent,
+	options: { replay?: boolean } = {},
+): TaskState {
 	validateEventEnvelope(event);
 	const baseState =
 		event.type === "task.snapshot"
 			? applySnapshot(event)
-			: applyEvent(cloneState(state), event);
+			: applyEvent(cloneState(state), event, options.replay === true);
 	baseState.events = [...state.events, event];
 	baseState.lastUpdatedAt = event.createdAt;
 	return baseState;
@@ -79,12 +85,16 @@ export function reduceTaskState(state: TaskState, event: TaskEvent): TaskState {
 
 export function replayTaskEvents(events: TaskEvent[]): TaskState {
 	return events.reduce(
-		(state, event) => reduceTaskState(state, event),
+		(state, event) => reduceTaskState(state, event, { replay: true }),
 		createEmptyState(),
 	);
 }
 
-function applyEvent(state: TaskState, event: TaskEvent): TaskState {
+function applyEvent(
+	state: TaskState,
+	event: TaskEvent,
+	replay: boolean,
+): TaskState {
 	switch (event.type) {
 		case "task.created":
 			return createTask(state, event);
@@ -97,7 +107,7 @@ function applyEvent(state: TaskState, event: TaskEvent): TaskState {
 		case "task.decision_recorded":
 			return recordDecision(state, event);
 		case "task.completed":
-			return completeTask(state, event);
+			return completeTask(state, event, replay);
 		case "task.cancelled":
 			return cancelTask(state, event);
 		case "task.snapshot":
@@ -488,6 +498,7 @@ function recordDecision(
 function completeTask(
 	state: TaskState,
 	event: Extract<TaskEvent, { type: "task.completed" }>,
+	replay: boolean,
 ): TaskState {
 	const task = requireTask(state, event.taskId);
 	validateStatusTransition(task, "done", event);
@@ -515,13 +526,26 @@ function completeTask(
 	}
 	const completionEvidenceIds = unique(event.evidenceIds);
 	validateCompletion(task, completionEvidenceIds, event.forceWithReason);
+	const legacy = replay && event.verifiedEvidenceIds === undefined;
+	if (!event.forceWithReason && !legacy) {
+		validateVerifiedSupport(
+			task,
+			completionEvidenceIds,
+			event.verifiedEvidenceIds ?? [],
+		);
+	}
+	// Force is sticky in either completion order; no later event may erase it.
+	if (event.forceWithReason) task.completionKind = "forced";
+	else
+		task.completionKind ??= legacy ? "legacy_unverified" : "verified_execution";
 	applyStatusChange(state, task, "done", event.createdAt);
 	task.progress = 100;
 	task.completedAt = event.createdAt;
 	task.completionSummary = event.summary;
-	task.confidence = event.forceWithReason
-		? Math.min(task.confidence ?? 60, 79)
-		: Math.max(task.confidence ?? 0, 90);
+	task.confidence =
+		task.completionKind === "forced"
+			? Math.min(task.confidence ?? 60, 79)
+			: Math.max(task.confidence ?? 0, 90);
 	if (event.forceWithReason) {
 		task.warnings.push(`Forced completion: ${event.forceWithReason}`);
 	}
@@ -548,6 +572,14 @@ function applySnapshot(
 ): TaskState {
 	const state = cloneState({ ...event.state, events: [] });
 	state.lastUpdatedAt = event.createdAt;
+	for (const task of Object.values(state.tasks)) {
+		if (task.status === "done")
+			task.completionKind ??= task.warnings.some((warning) =>
+				warning.startsWith("Forced completion:"),
+			)
+				? "forced"
+				: "legacy_unverified";
+	}
 	return state;
 }
 
@@ -903,7 +935,9 @@ function resolveTaskWarnings(task: Task, warnings: string[]): void {
 		if (!trimmed) continue;
 		const before = task.warnings.length;
 		task.warnings = task.warnings.filter(
-			(existing) => existing !== trimmed && !existing.startsWith(trimmed),
+			(existing) =>
+				existing.startsWith("Forced completion:") ||
+				(existing !== trimmed && !existing.startsWith(trimmed)),
 		);
 		if (task.warnings.length === before) {
 			throw new TaskTransitionError(`Warning not found: ${trimmed}`);
@@ -1028,6 +1062,67 @@ function validateCompletion(
 	if (!forceReason) {
 		for (const evidenceItem of evidence)
 			validateEvidenceQualityScore(evidenceItem);
+	}
+}
+
+export function validateVerifiedSupport(
+	task: Task,
+	completionIds: string[],
+	verifiedIds: string[],
+): void {
+	const verified = new Set(
+		verifiedIds.filter((id) => {
+			const evidence = requireEvidence(task, id);
+			return (
+				evidence.passed === true &&
+				evidence.verification?.receiptId &&
+				evidence.verification.receiptId === evidence.quality.receiptId
+			);
+		}),
+	);
+	const requireSupport = (ids: string[], scope: string) => {
+		if (!ids.some((id) => verified.has(id)))
+			throw new TaskTransitionError(
+				`${scope} requires current runtime-verified evidence; run task_verify and link its receipt with task_evidence`,
+				"verification_receipt_required",
+			);
+	};
+	const requireCurrentReruns = (ids: string[], scope: string) => {
+		for (const id of ids) {
+			const failed = requireEvidence(task, id);
+			if (failed.passed !== false) continue;
+			const rerun = ids.some((candidateId) => {
+				const candidate = requireEvidence(task, candidateId);
+				return (
+					verified.has(candidateId) &&
+					candidate.supersedes?.includes(id) &&
+					Date.parse(candidate.createdAt) > Date.parse(failed.createdAt)
+				);
+			});
+			if (!rerun)
+				throw new TaskTransitionError(
+					`${scope} requires a current verified rerun superseding failed evidence ${id}`,
+					"verification_receipt_required",
+				);
+		}
+	};
+	requireSupport(
+		completionIds.length ? completionIds : task.evidence.map((item) => item.id),
+		"Completion",
+	);
+	requireCurrentReruns(
+		completionIds.length ? completionIds : task.evidence.map((item) => item.id),
+		"Completion",
+	);
+	for (const criterion of task.acceptanceCriteria) {
+		if (criterion.status === "satisfied")
+			requireSupport(criterion.evidenceIds, `Criterion ${criterion.id}`);
+		requireCurrentReruns(criterion.evidenceIds, `Criterion ${criterion.id}`);
+	}
+	for (const step of task.planSteps) {
+		if (step.status === "done" && step.evidenceRequired)
+			requireSupport(step.evidenceIds, `Plan step ${step.id}`);
+		requireCurrentReruns(step.evidenceIds, `Plan step ${step.id}`);
 	}
 }
 
@@ -1257,6 +1352,7 @@ function normalizeEvidenceQuality(
 ): EvidenceQuality {
 	const artifactRefs = quality?.artifactRefs ?? evidence.references ?? [];
 	return {
+		...(quality?.receiptId ? { receiptId: quality.receiptId } : {}),
 		source: quality?.source?.trim() || evidence.type,
 		reproducible: quality?.reproducible ?? artifactRefs.length > 0,
 		verifier: quality?.verifier ?? "agent",
@@ -1336,6 +1432,9 @@ function findDuplicateEvidence(
 			existing.type === evidence.type &&
 			existing.level === evidence.level &&
 			existing.passed === evidence.passed &&
+			evidenceQualityKey(existing.quality) ===
+				evidenceQualityKey(evidence.quality) &&
+			existing.verification?.receiptId === evidence.verification?.receiptId &&
 			existing.summary.trim() === evidence.summary.trim() &&
 			normalizedReferences(existing.references) ===
 				normalizedReferences(evidence.references) &&

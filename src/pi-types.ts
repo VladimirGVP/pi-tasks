@@ -4,7 +4,15 @@ import type { BranchEntry } from "./store.ts";
 export interface ToolResult {
 	content: Array<{ type: "text"; text: string }>;
 	details?: unknown;
+	structuredContent?: unknown;
 	isError?: boolean;
+}
+
+export interface ToolCallOutcome {
+	toolCall: { id: string; name: string; arguments: Record<string, unknown> };
+	result: ToolResult;
+	isError: boolean;
+	durationMs?: number;
 }
 
 export interface ToolDefinition<TParams extends Record<string, unknown>> {
@@ -51,7 +59,14 @@ export interface ExtensionAPI {
 }
 
 export interface ExtensionContext {
+	cwd?: string;
+	executeTool?(
+		name: string,
+		args: Record<string, unknown>,
+		options?: { signal?: AbortSignal },
+	): Promise<ToolCallOutcome>;
 	sessionManager: {
+		getSessionId?(): string;
 		getBranch(): BranchEntry[];
 	};
 	ui: {

@@ -3,6 +3,7 @@ import {
 	type AcceptanceCriterion,
 	type EvidenceQuality,
 	type EvidenceType,
+	evidenceQualityKey,
 	isAtMaximumDecompositionDepth,
 	MAX_EVIDENCE_OBSERVED_OUTPUT_LENGTH,
 	MAX_EVIDENCE_REFERENCE_LENGTH,
@@ -34,6 +35,11 @@ import {
 } from "./render.ts";
 import { Type } from "./schema.ts";
 import { errorText, snapshotState, type TaskRuntimeStore } from "./store.ts";
+import {
+	bindEvidence,
+	currentVerifiedEvidence,
+	runVerification,
+} from "./verification.ts";
 import { updateTaskUi } from "./widget.ts";
 
 const TASK_STATUSES = [
@@ -737,6 +743,40 @@ export function registerTaskTools(
 		},
 	});
 
+	registerGuidedTool<{
+		task_id: string;
+		command: string;
+		artifactRefs: string[];
+		timeout?: number;
+	}>(pi, {
+		name: "task_verify",
+		label: "Task Verify",
+		description:
+			"Run a verification command through native bash and bind its successful outcome to source content and local report hashes. Returns a receipt ID, not semantic acceptance.",
+		promptSnippet: "Execute verification once with runtime-bound evidence",
+		promptGuidelines: [
+			"Use task_verify instead of a separate bash run when the result will support task completion.",
+			"Store reports outside source control or in ignored output directories; source changes during the command invalidate verification.",
+			"Pass returned receiptId to task_evidence quality with the same exact command and artifactRefs. Every completed step and satisfied criterion needs current receipt-backed support.",
+		],
+		parameters: Type.Object({
+			task_id: Type.String(),
+			command: Type.String({ maxLength: MAX_EVIDENCE_REFERENCE_LENGTH }),
+			artifactRefs: Type.Array(Type.String(), { minItems: 1, maxItems: 20 }),
+			timeout: Type.Optional(Type.Number()),
+		}),
+		execute: async (_id, params, signal, _onUpdate, ctx) => {
+			const task = store.getState().tasks[params.task_id];
+			if (!task || !["active", "review"].includes(task.status))
+				throw new Error("Verification requires an active/review task");
+			const receipt = await runVerification(pi, ctx, task, params, signal);
+			return textResult(
+				`Observed native bash exit_code=0; receiptId: ${receipt.id}. Source and report hashes recorded. This is execution evidence, not independent acceptance.`,
+				receipt,
+			);
+		},
+	});
+
 	registerGuidedTool<TaskEvidenceParams>(pi, {
 		name: "task_evidence",
 		label: "Task Evidence",
@@ -749,6 +789,7 @@ export function registerTaskTools(
 			"Smart models: record the exact observed result; do not turn failed evidence into a note or hide it from linked step/criterion lineage.",
 			"Weak models: copy task_focus IDs exactly; use passed=false for failed runs and passed=true only for observed passes.",
 			"Passing non-note evidence must use a verification level stronger than not_verified.",
+			"To support ordinary completion, use quality.receiptId from task_verify. Claims without a receipt remain notes, not verified acceptance.",
 			"Attach criterion IDs when evidence proves specific acceptance criteria.",
 			"Attach step_ids when evidence proves specific atomic steps, especially when multiple steps share the same criterion.",
 			"When a passing rerun resolves prior linked failed evidence, set supersedes to the failed evidence IDs and link the rerun to the same step_ids/criterion_ids.",
@@ -756,10 +797,13 @@ export function registerTaskTools(
 		],
 		parameters: taskEvidenceParametersSchema(),
 		execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
-			const duplicate = findDuplicateEvidenceForParams(
-				store.getState().tasks[params.task_id],
-				params,
-			);
+			const task = store.getState().tasks[params.task_id];
+			if (!task) throw new Error(`Task ${params.task_id} not found`);
+			const verification = bindEvidence(ctx, task, {
+				quality: params.quality,
+				passed: parsePassed(params.passed),
+			});
+			const duplicate = findDuplicateEvidenceForParams(task, params);
 			if (
 				duplicate &&
 				criteriaAlreadyLinked(store.getState(), params, duplicate)
@@ -779,6 +823,7 @@ export function registerTaskTools(
 					passed: parsePassed(params.passed),
 					references: params.references ?? [],
 					...(params.quality ? { quality: params.quality } : {}),
+					...(verification ? { verification } : {}),
 					...(params.supersedes ? { supersedes: params.supersedes } : {}),
 				},
 				...(params.criterion_ids ? { criterionIds: params.criterion_ids } : {}),
@@ -869,7 +914,13 @@ export function registerTaskTools(
 			force_with_reason: Type.Optional(Type.String()),
 		}),
 		execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+			const task = store.getState().tasks[params.task_id];
+			if (!task) throw new Error(`Task ${params.task_id} not found`);
+			const verifiedEvidenceIds = params.force_with_reason
+				? []
+				: currentVerifiedEvidence(ctx, task);
 			const event = baseEvent("task.completed", params.task_id, ctx, {
+				verifiedEvidenceIds,
 				summary: params.summary,
 				evidenceIds: params.evidence_ids,
 				...(params.criterion_results
@@ -939,6 +990,12 @@ function taskEvidenceParametersSchema() {
 
 function evidenceQualitySchema() {
 	return Type.Object({
+		receiptId: Type.Optional(
+			Type.String({
+				description:
+					"Runtime receipt ID from task_verify; arbitrary call IDs or verifier labels are not accepted.",
+			}),
+		),
 		source: Type.String({
 			maxLength: MAX_EVIDENCE_REFERENCE_LENGTH,
 			description: `Evidence source, at most ${MAX_EVIDENCE_REFERENCE_LENGTH} characters`,
@@ -1029,6 +1086,27 @@ function buildRejectionRecovery(
 	const resume = buildTaskResume(state);
 	const retryExample = buildEvidenceRetryExample(event);
 	const scopeRecovery = buildScopeUpdateRecovery(error, event);
+	if (
+		error instanceof TaskTransitionError &&
+		error.code === "verification_receipt_required"
+	) {
+		return {
+			rejected: true,
+			reason: error.message,
+			retry_with: "task_verify",
+			retry_example: undefined,
+			minimum_params: {
+				task_id: event?.taskId,
+				command: "<verification command producing report>",
+				artifactRefs: ["<local report file>"],
+			},
+			correct_rejected_call_first: true,
+			do_not_retry_same_call: true,
+			after_verification:
+				"Link receiptId using task_evidence to each affected step/criterion; use override_reason for closed steps. Reruns replacing failed evidence must supersede that failure.",
+			resume,
+		};
+	}
 	return {
 		rejected: true,
 		reason: errorText(error),
@@ -1246,6 +1324,9 @@ function findDuplicateEvidenceForParams(
 			evidence.type === params.type &&
 			evidence.level === params.level &&
 			evidence.passed === passed &&
+			evidenceQualityKey(evidence.quality) ===
+				evidenceQualityKey(params.quality) &&
+			evidence.verification?.receiptId === params.quality.receiptId &&
 			evidence.summary.trim() === params.summary.trim() &&
 			normalizedReferences(evidence.references) ===
 				normalizedReferences(references) &&
